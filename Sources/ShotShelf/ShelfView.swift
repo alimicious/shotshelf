@@ -1,0 +1,421 @@
+import SwiftUI
+
+private let terracotta = Color(nsColor: ShelfIcon.terracotta)
+private let cellSize = CGSize(width: 104, height: 70)
+private let heroSize = CGSize(width: 328, height: 184)
+private let hoverSpring = Animation.spring(duration: 0.28, bounce: 0.25)
+
+struct ShelfView: View {
+    @ObservedObject var store: ShelfStore
+    @AppStorage(Prefs.autoTidyDays) private var autoTidyDays = 0
+    @AppStorage(Prefs.hotKey) private var hotKey: HotKeyPreset = .optionCommandS
+    @AppStorage(Prefs.smartNames) private var smartNames = true
+    @AppStorage(Prefs.mascot) private var mascot = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            grid
+            folderChips
+            footer
+        }
+        .padding(16)
+        .frame(width: 360)
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
+                .frame(width: 34, height: 34)
+                .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Screenshots").font(.headline)
+                Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 6) {
+                    GlassIconButton(systemName: "square.grid.2x2", help: "Show all and search (⌘F)") {
+                        store.showAll.toggle()
+                    }
+                    .popover(isPresented: $store.showAll, arrowEdge: .bottom) { AllShotsView(store: store) }
+                    GlassIconButton(systemName: "folder", help: "Open \(store.folder.lastPathComponent) in Finder") {
+                        NSWorkspace.shared.open(store.folder)
+                    }
+                    // Settings open in a popover so the panel never changes height; MenuBarExtra
+                    // windows don't resize cleanly when their content grows or shrinks.
+                    GlassIconButton(systemName: "gearshape", help: "Settings") {
+                        store.showSettings.toggle()
+                    }
+                    .popover(isPresented: $store.showSettings, arrowEdge: .bottom) { settings }
+                }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        "\(store.todayCount) today · \(store.shots.count) on \(store.folder.lastPathComponent)"
+    }
+
+    // MARK: - Grid
+
+    /// The first shot gets the big slot; the rest fill two rows of three below it.
+    private var grid: some View {
+        let shots = Array(store.visible)
+        return VStack(spacing: 8) {
+            slot(shots, 0, size: heroSize)
+            ForEach(0..<2, id: \.self) { row in
+                HStack(spacing: 8) {
+                    ForEach(0..<3, id: \.self) { col in slot(shots, 1 + row * 3 + col, size: cellSize) }
+                }
+            }
+        }
+        .overlay { if store.shots.isEmpty { emptyState } }
+        .overlay(alignment: .top) { if let toast = store.toast { toastView(toast) } }
+        .animation(hoverSpring, value: store.toast)
+    }
+
+    @ViewBuilder
+    private func slot(_ shots: [Shot], _ index: Int, size: CGSize) -> some View {
+        if index < shots.count {
+            ShotCell(shot: shots[index], store: store, size: size, isHero: index == 0)
+        } else {
+            RoundedRectangle(cornerRadius: index == 0 ? 18 : 12)
+                .fill(.quinary.opacity(0.6))
+                .overlay { Image(systemName: "photo").font(.system(size: index == 0 ? 28 : 16)).foregroundStyle(.quaternary) }
+                .frame(width: size.width, height: size.height)
+        }
+    }
+
+    private func toastView(_ toast: Toast) -> some View {
+        Label(toast.text, systemImage: toast.symbol)
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.top, 10)
+            .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 4) {
+            if store.folderReadable {
+                Text("No screenshots yet").font(.callout.weight(.semibold))
+                Text("Press ⇧⌘4 to grab one").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Can't read \(store.folder.lastPathComponent)").font(.callout.weight(.semibold))
+                Text("Allow access in System Settings › Privacy & Security › Files & Folders")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 18).padding(.vertical, 12)
+        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+    }
+
+    // MARK: - Folders
+
+    /// Folder chips: drop a shot on one to move it there, click to open it, right-click to remove.
+    private var folderChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 6) {
+                HStack(spacing: 6) {
+                    ForEach(store.folders, id: \.self) { FolderChip(folder: $0, store: store) }
+                    Button { store.addFolder() } label: {
+                        Label(store.folders.isEmpty ? "Add a folder to drop shots into" : "Add", systemImage: "plus")
+                            .font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.glass).controlSize(.small)
+                    .help("Shots dropped on a folder chip are moved into that folder")
+                }
+                .padding(.vertical, 3).padding(.horizontal, 1)
+            }
+        }
+        .frame(height: 32)
+    }
+
+    // MARK: - Footer
+
+    private var footer: some View {
+        let count = store.tidyCandidates.count
+        // Confirming swaps the row's contents in place, keeping the panel the same height.
+        return HStack(spacing: 8) {
+            if store.confirmingTidy {
+                Text("Move \(count) older shot\(count == 1 ? "" : "s") to the Trash?").font(.caption.weight(.medium))
+                Spacer()
+                Button("Cancel") { store.confirmingTidy = false }
+                    .buttonStyle(.glass).controlSize(.small)
+                Button("Trash") { store.tidy() }
+                    .buttonStyle(.glassProminent).tint(terracotta).controlSize(.small)
+            } else {
+                Text("Drag to share or rearrange · Space to preview").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button { store.confirmingTidy = true } label: {
+                    Label(count > 0 ? "Tidy \(count)" : "Tidy", systemImage: "sparkles")
+                }
+                .buttonStyle(.glass).controlSize(.small)
+                .disabled(count == 0)
+                .help("Move screenshots from before today to the Trash. Pinned ones stay.")
+            }
+        }
+        .frame(height: 28)
+        .animation(hoverSpring, value: store.confirmingTidy)
+    }
+
+    // MARK: - Settings
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Settings").font(.headline)
+            Picker("Auto-tidy", selection: $autoTidyDays) {
+                Text("Off").tag(0)
+                Text("After 1 day").tag(1)
+                Text("After 3 days").tag(3)
+                Text("After 7 days").tag(7)
+            }
+            Text("Moves unpinned screenshots to the Trash once they're this old.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("Open shelf", selection: $hotKey) {
+                ForEach(HotKeyPreset.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .onChange(of: hotKey) { store.applyHotKey() }
+            Toggle("Name new shots from their text", isOn: $smartNames)
+            Toggle("Mascot snaps new shots", isOn: $mascot)
+            Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
+            Divider()
+            HStack {
+                Text(store.folder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.glass).controlSize(.small)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+}
+
+// MARK: - Cell
+
+private struct ShotCell: View {
+    let shot: Shot
+    @ObservedObject var store: ShelfStore
+    let size: CGSize
+    let isHero: Bool
+
+    private var isHovered: Bool { store.hovered == shot.url }
+    private var isDropTarget: Bool { store.dropTarget == shot.url && store.dragging != shot.url }
+    private var radius: CGFloat { isHero ? 18 : 12 }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: radius).fill(.quinary)
+            if let image = store.thumbnails[shot.url] {
+                if isHero {
+                    // Show the whole shot, over a blurred copy of itself instead of empty bars.
+                    Image(nsImage: image).resizable().scaledToFill()
+                        .frame(width: size.width, height: size.height).blur(radius: 24).opacity(0.7).clipped()
+                    Image(nsImage: image).resizable().scaledToFit()
+                        .frame(width: size.width, height: size.height)
+                        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+                } else {
+                    Image(nsImage: image).resizable().scaledToFill()
+                        .frame(width: size.width, height: size.height).clipped()
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: radius))
+        .overlay {
+            // A hairline edge like the system's glass, which turns terracotta while hovered or targeted.
+            RoundedRectangle(cornerRadius: radius)
+                .strokeBorder(isDropTarget || isHovered ? AnyShapeStyle(terracotta) : AnyShapeStyle(.white.opacity(0.12)),
+                              lineWidth: isDropTarget ? 2.5 : isHovered ? 1.5 : 1)
+        }
+        .overlay(alignment: .topLeading) { badges }
+        .overlay(alignment: .topTrailing) { if isHero { age } }
+        .overlay(alignment: .bottom) { if isHovered { actions } }
+        .shadow(color: isDropTarget ? terracotta.opacity(0.5) : .black.opacity(isHovered ? 0.28 : 0.1),
+                radius: isHovered || isDropTarget ? 10 : 3, y: isHovered ? 5 : 1)
+        .scaleEffect(isDropTarget ? 1.04 : isHovered ? (isHero ? 1.01 : 1.03) : 1)
+        .zIndex(isHovered || isDropTarget ? 1 : 0)
+        .animation(hoverSpring, value: isHovered)
+        .animation(hoverSpring, value: isDropTarget)
+        .contentShape(RoundedRectangle(cornerRadius: radius))
+        .onHover { inside in
+            if inside { store.hovered = shot.url } else if isHovered { store.hovered = nil }
+        }
+        .onTapGesture(count: 2) { store.open(shot) }
+        .onDrag {
+            store.dragging = shot.url
+            return NSItemProvider(contentsOf: shot.url) ?? NSItemProvider()
+        }
+        .onDrop(of: [.item], delegate: RearrangeDrop(target: shot, store: store))
+        .contextMenu { ShotMenu(shot: shot, store: store) }
+        .help("\(shot.date.formatted(date: .abbreviated, time: .shortened)) · \(shot.url.lastPathComponent)")
+    }
+
+    private var age: some View {
+        Text(shot.date.formatted(.relative(presentation: .named)))
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .glassEffect(.regular, in: .capsule)
+            .padding(9)
+    }
+
+    private var badges: some View {
+        HStack(spacing: 5) {
+            if shot.date > store.freshSince {
+                Circle().fill(terracotta).frame(width: 8, height: 8)
+                    .overlay(Circle().strokeBorder(.white.opacity(0.9), lineWidth: 1.2))
+                    .shadow(color: terracotta.opacity(0.8), radius: 4)
+            }
+            if store.isPinned(shot) {
+                Image(systemName: "pin.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .glassEffect(.regular.tint(terracotta), in: .circle)
+            }
+        }
+        .padding(isHero ? 9 : 6)
+    }
+
+    /// Glass over the screenshot itself, so the controls pick up its colours.
+    private var actions: some View {
+        GlassEffectContainer {
+            HStack(spacing: 0) {
+                CellButton(systemName: "doc.on.doc", help: "Copy image (⌘C)") { store.copy(shot) }
+                CellButton(systemName: "text.viewfinder", help: "Copy text (T)") { store.copyText(shot) }
+                CellButton(systemName: "eye", help: "Quick Look (Space)") { store.quickLook(shot) }
+                Menu { ShotMenu(shot: shot, store: store) } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 10, weight: .semibold)).frame(width: 20, height: 18)
+                }
+                .menuStyle(.button).buttonStyle(.borderless).menuIndicator(.hidden).fixedSize()
+                .help("More")
+            }
+            .padding(.horizontal, 4).padding(.vertical, 3)
+            .glassEffect(.regular.interactive(), in: .capsule)
+        }
+        .padding(.bottom, isHero ? 10 : 6)
+        .transition(.scale(scale: 0.8, anchor: .bottom).combined(with: .opacity))
+    }
+}
+
+/// Rearranging: dropping one of the shelf's own shots onto another moves it into that spot.
+/// Only acts on a drop, not while passing over, so dragging a shot out to another app never reshuffles the shelf.
+@MainActor
+private struct RearrangeDrop: DropDelegate {
+    let target: Shot
+    let store: ShelfStore
+
+    func validateDrop(info: DropInfo) -> Bool { store.dragging != nil }
+    func dropEntered(info: DropInfo) { store.dropTarget = target.url }
+    func dropExited(info: DropInfo) { if store.dropTarget == target.url { store.dropTarget = nil } }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { store.dragging = nil; store.dropTarget = nil }
+        guard let url = store.dragging else { return false }
+        withAnimation(.snappy) { store.move(url, onto: target.url) }
+        return true
+    }
+}
+
+/// Everything you can do with a shot, for the ⋯ button and right-click menus.
+struct ShotMenu: View {
+    let shot: Shot
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        Button("Copy Image", systemImage: "doc.on.doc") { store.copy(shot) }
+        Button("Copy Text", systemImage: "text.viewfinder") { store.copyText(shot) }
+        Button("Quick Look", systemImage: "eye") { store.quickLook(shot) }
+        Divider()
+        Button(store.isPinned(shot) ? "Unpin" : "Pin", systemImage: store.isPinned(shot) ? "pin.slash" : "pin") {
+            store.togglePin(shot)
+        }
+        Button("Redact…", systemImage: "eye.slash") { store.redact(shot) }
+        Button("Rename from Text", systemImage: "character.cursor.ibeam") { store.smartRename(shot) }
+        if !store.folders.isEmpty {
+            Menu("Move to", systemImage: "folder") {
+                ForEach(store.folders, id: \.self) { folder in
+                    Button(folder.lastPathComponent) { store.file(shot, into: folder) }
+                }
+            }
+        }
+        Button("Show in Finder", systemImage: "magnifyingglass") { store.reveal(shot) }
+        Divider()
+        Button("Move to Trash", systemImage: "trash", role: .destructive) { store.trash(shot) }
+    }
+}
+
+private struct FolderChip: View {
+    let folder: URL
+    @ObservedObject var store: ShelfStore
+
+    private var isTarget: Bool { store.dropFolder == folder }
+
+    var body: some View {
+        Label(folder.lastPathComponent, systemImage: isTarget ? "folder.fill.badge.plus" : "folder.fill")
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .glassEffect(isTarget ? .regular.tint(terracotta.opacity(0.6)).interactive() : .regular.interactive(), in: .capsule)
+            .scaleEffect(isTarget ? 1.08 : 1)
+            .animation(hoverSpring, value: isTarget)
+            .onTapGesture { NSWorkspace.shared.open(folder) }
+            .onDrop(of: [.item], delegate: FolderDrop(folder: folder, store: store))
+            .contextMenu {
+                Button("Open in Finder") { NSWorkspace.shared.open(folder) }
+                Button("Remove from Shelf") { store.removeFolder(folder) }
+            }
+            .help("Drop a shot here to move it to \(folder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))")
+    }
+}
+
+@MainActor
+private struct FolderDrop: DropDelegate {
+    let folder: URL
+    let store: ShelfStore
+
+    func validateDrop(info: DropInfo) -> Bool { store.dragging != nil }
+    func dropEntered(info: DropInfo) { store.dropFolder = folder }
+    func dropExited(info: DropInfo) { if store.dropFolder == folder { store.dropFolder = nil } }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { store.dragging = nil; store.dropFolder = nil }
+        guard let url = store.dragging, let shot = store.shots.first(where: { $0.url == url }) else { return false }
+        store.file(shot, into: folder)
+        return true
+    }
+}
+
+private struct CellButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName).font(.system(size: 10, weight: .semibold))
+                .frame(width: 20, height: 18).contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+}
+
+private struct GlassIconButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName).font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .help(help)
+    }
+}
