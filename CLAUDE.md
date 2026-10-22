@@ -9,10 +9,12 @@ first for what it does. This file covers how to work on it.
 - `StatusController.swift`: the menu bar item and every window (shelf panel, search panel, capture
   bar). Built by hand because MenuBarExtra can't be opened from code (the global shortcut needs that).
 - `ShelfStore.swift`: all state and actions (scanning, keys, tidy, presets, capture, updates).
-- `ShelfView.swift` (shelf, settings, update popover), `AllShotsView.swift` (search),
-  `PresetCapture.swift` (capture bar, preset editor, capture overlay), `Redactor.swift`,
-  `Updater.swift`, `HotKey.swift` (shortcuts, panel sizes, app delegate + Quick Look),
-  `ShotScanner.swift` (folder scan, OCR, smart names), `ShelfIcon.swift`, `AppIcon.swift`.
+- `ShelfView.swift` (shelf, selection footer, welcome, settings, update popover), `AllShotsView.swift`
+  (search), `PresetCapture.swift` (capture bar, preset editor, capture overlay), `Markup.swift`
+  (markup and redact editor), `FloatingShot.swift` (shots floated on screen), `Updater.swift`,
+  `HotKey.swift` (shortcuts, panel sizes, app delegate + Quick Look), `ShotScanner.swift` (folder
+  scan, OCR, QR codes, links, smart names), `ShelfIcon.swift` (menu bar icon and its new-shot
+  animation), `AppIcon.swift`.
 
 ## Toolchain quirks (this Mac has only the Command Line Tools)
 
@@ -25,7 +27,12 @@ first for what it does. This file covers how to work on it.
   - `--selftest`: opens the real panels on screen and prints window frames, the editor morph, search
     and Quick Look. If the user clicks elsewhere during it, the shelf closes (by design) and later
     checks read wrong; just re-run.
-  - `--dump`: lists screenshots and tests OCR.
+  - `--dump`: lists screenshots and tests OCR and link detection.
+  - `--render-markup in.png out.png`: one of each mark drawn on a shot, as Save Copy would save it.
+  - `--selftest-actions --folder <dir>`: trash and undo, selection, links and QR codes, a floating shot
+    and the markup editor, on sample shots (it moves them to the Trash and back, so never point it at
+    real ones). `--folder` works with the other flags too. Builds run from `.build` keep their settings
+    apart from the installed app's, and `--folder` keeps the text index beside the samples.
 - Glass windows: borderless `ShelfPanel`s with `NSGlassEffectView`s inside
   `NSGlassEffectContainerView`s, no window shadow, `ignoresMouseEvents = false` and a 1% backing so
   clicks don't fall through on macOS 26.

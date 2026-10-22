@@ -66,6 +66,7 @@ struct AllShotsView: View {
     }
 
     private var status: String {
+        if !store.selection.isEmpty { return "\(store.selection.count) selected · ⌘-click or ⇧-click to change" }
         let count = store.query.isEmpty ? "\(store.shots.count) screenshots" : "\(store.searchResults.count) of \(store.shots.count)"
         return store.indexing > 0 ? "\(count) · reading text in \(store.indexing) more…" : count
     }
@@ -80,6 +81,8 @@ private struct MiniCell: View {
 
     /// Selected by the arrow keys or the pointer; the two share one selection.
     private var isHovered: Bool { store.searchSelection == shot.url }
+    /// Picked with ⌘-click or ⇧-click, along with others (the shelf shares these).
+    private var isSelected: Bool { store.selection.contains(shot.url) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -94,15 +97,25 @@ private struct MiniCell: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay {
                 RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(isHovered ? AnyShapeStyle(terracotta) : AnyShapeStyle(.white.opacity(0.12)), lineWidth: isHovered ? 1.5 : 1)
+                    .fill(terracotta.opacity(isSelected ? 0.14 : 0))
+                    .strokeBorder(isHovered || isSelected ? AnyShapeStyle(terracotta) : AnyShapeStyle(.white.opacity(0.12)),
+                                  lineWidth: isSelected ? 2.5 : isHovered ? 1.5 : 1)
+                    .allowsHitTesting(false)
             }
             .overlay(alignment: .topLeading) {
-                if store.isPinned(shot) {
-                    Image(systemName: "pin.fill").font(.system(size: 7, weight: .bold)).foregroundStyle(.white)
-                        .frame(width: 15, height: 15)
-                        .glassEffect(.regular.tint(terracotta), in: .circle)
-                        .padding(4)
+                HStack(spacing: 3) {
+                    if isSelected {
+                        Image(systemName: "checkmark").font(.system(size: 7, weight: .heavy)).foregroundStyle(.white)
+                            .frame(width: 15, height: 15)
+                            .glassEffect(.regular.tint(terracotta), in: .circle)
+                    }
+                    if store.isPinned(shot) {
+                        Image(systemName: "pin.fill").font(.system(size: 7, weight: .bold)).foregroundStyle(.white)
+                            .frame(width: 15, height: 15)
+                            .glassEffect(.regular.tint(terracotta), in: .circle)
+                    }
                 }
+                .padding(4)
             }
             .overlay(alignment: .topTrailing) {
                 // Can be turned off in Settings; Space still previews.
@@ -132,10 +145,11 @@ private struct MiniCell: View {
         }
         .onTapGesture(count: 2) { store.open(shot) }
         // A click selects the shot and takes the keys from the search field, so the arrows and
-        // Space work straight away.
+        // Space work straight away. ⌘- and ⇧-clicks pick several.
         .simultaneousGesture(TapGesture().onEnded {
             store.searchSelection = shot.url
             store.searchFocused = false
+            store.click(shot, in: results)
         })
         .onDrag {
             // Lets the panel's tiles take the drop and put this shot in their spot.

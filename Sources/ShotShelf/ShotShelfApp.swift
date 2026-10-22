@@ -19,6 +19,8 @@ enum Prefs {
     static let searchEyes = "searchEyes"            // Bool, show the eye buttons on search results
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
     static let iconAnimation = "mascot"       // Bool, animate the menu bar icon for new shots (stored under its old name)
+    static let welcomed = "welcomed"          // Bool, the first-launch card has been dismissed
+    static let markupTool = "markupTool"      // MarkTool raw value, the last one used
 }
 
 @main
@@ -26,10 +28,16 @@ struct ShotShelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Debug flags: `--dump` lists the screenshots found, `--render <file.png> [--size small|medium|large]` saves the panel,
-        // `--selftest` opens the panel and Quick Look on screen and reports what happened.
+        // Debug flags: `--dump` lists the screenshots found, `--render <file.png> [--size small|medium|large]
+        // [--extras] [--welcome] [--select] [--undo-toast]` saves the panel, `--render-markup <in.png> <out.png>`
+        // draws one of each mark on a shot, `--selftest` opens the panel and Quick Look on screen and reports
+        // what happened, and `--selftest-actions` tries trash and undo, selection, links, floating and markup.
+        // `--folder <dir>` points any of them at sample shots instead of your screenshot folder.
         // Build flag: `--iconset <dir>` writes the app icon PNGs (see build.sh).
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--folder"), i + 1 < args.count {
+            ShotScanner.testFolder = URL(fileURLWithPath: args[i + 1], isDirectory: true)
+        }
         if let i = args.firstIndex(of: "--iconset"), i + 1 < args.count {
             do {
                 try AppIcon.writeIconset(to: URL(fileURLWithPath: args[i + 1]))
@@ -52,7 +60,13 @@ struct ShotShelfApp: App {
                 let lines = ShotText.recognize(first.url)
                 print("text in newest: \(lines.count) lines")
                 print("smart name: \(ShotText.smartName(lines, app: nil, date: first.date) ?? "none")")
+                let links = ShotText.links(text: lines.map(\.text).joined(separator: "\n"), codes: ShotText.codes(first.url))
+                print("quick actions: \(links.map(\.title))")
             }
+            exit(0)
+        }
+        if let i = args.firstIndex(of: "--render-markup"), i + 2 < args.count {
+            Self.renderMarkup(args[i + 1], to: args[i + 2])
             exit(0)
         }
         if let i = args.firstIndex(of: "--render-icons"), i + 1 < args.count {
@@ -64,6 +78,7 @@ struct ShotShelfApp: App {
             exit(0)
         }
         if args.contains("--selftest") { Self.selfTest() }
+        if args.contains("--selftest-actions") { Self.selfTestActions() }
 
         // Release flags (see release.sh): `--generate-update-key` prints a new private key then its
         // public key, `--sign-update <zip>` signs with the private key read from stdin,
@@ -128,6 +143,9 @@ struct ShotShelfApp: App {
             store.panelSize = size
         }
         if args.contains("--extras") { store.addPreviewExtras() }
+        if args.contains("--welcome") { store.showPreviewWelcome() }
+        if args.contains("--select") { store.selectAll(Array(store.visible.prefix(3))) }
+        if args.contains("--undo-toast") { store.showToast("Moved 3 to the Trash", symbol: "trash", undo: true) }
         let renderer = ImageRenderer(content: ShelfView(store: store)
             .background(Color(nsColor: .windowBackgroundColor)))
         renderer.scale = 2
@@ -135,6 +153,27 @@ struct ShotShelfApp: App {
            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
             try? png.write(to: URL(fileURLWithPath: path))
         }
+    }
+
+    /// One mark of each kind on a shot, saved the way the editor's Save Copy would save it.
+    @MainActor private static func renderMarkup(_ input: String, to path: String) {
+        guard let model = MarkupModel(shot: Shot(url: URL(fileURLWithPath: input), date: Date())) else {
+            print("Couldn't open \(input)")
+            exit(1)
+        }
+        model.marks = [
+            Mark(tool: .redact, start: CGPoint(x: 0.04, y: 0.05), end: CGPoint(x: 0.4, y: 0.2), color: 0),
+            Mark(tool: .highlight, start: CGPoint(x: 0.04, y: 0.28), end: CGPoint(x: 0.62, y: 0.38), color: 2),
+            Mark(tool: .box, start: CGPoint(x: 0.56, y: 0.5), end: CGPoint(x: 0.95, y: 0.9), color: 0),
+            Mark(tool: .arrow, start: CGPoint(x: 0.2, y: 0.88), end: CGPoint(x: 0.53, y: 0.66), color: 1),
+            Mark(tool: .text, start: CGPoint(x: 0.06, y: 0.5), end: CGPoint(x: 0.06, y: 0.5), color: 3, text: "Look here"),
+            Mark(tool: .text, start: CGPoint(x: 0.6, y: 0.05), end: CGPoint(x: 0.6, y: 0.05), color: 4, text: "White text"),
+        ]
+        guard let data = model.render() else {
+            print("Couldn't render")
+            exit(1)
+        }
+        try? data.write(to: URL(fileURLWithPath: path))
     }
 
     /// The menu bar icon at rest and then every frame of its new-shot animation, with and without
@@ -252,6 +291,89 @@ struct ShotShelfApp: App {
                     }
                 }
             }
+        }
+    }
+
+    /// Runs the shelf's actions on the sample shots in `--folder` (never your real screenshots) and
+    /// prints what happened: links and QR codes found, selecting, pinning, trash and undo, a floating
+    /// shot and the markup editor. Moves samples to the Trash and back along the way.
+    private static func selfTestActions() {
+        guard ShotScanner.testFolder != nil else {
+            print("--selftest-actions needs --folder <dir of sample shots>")
+            exit(1)
+        }
+        func pause(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
+        func exists(_ shot: Shot) -> Bool { FileManager.default.fileExists(atPath: shot.url.path) }
+        /// Saves what a window's own views draw into the sample folder's hidden .ShotShelf folder. The
+        /// glass is drawn by the window server, so it's missing, and a view with tinted interactive
+        /// glass (like the selection bar) comes out blank.
+        func snapshot(_ window: NSWindow?, _ name: String) {
+            guard let view = window?.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            let url = ShotScanner.folder.appendingPathComponent(".ShotShelf/\(name).png")
+            try? rep.representation(using: .png, properties: [:])?.write(to: url)
+        }
+        Task { @MainActor in
+            await pause(2)
+            guard let controller = AppDelegate.shared?.statusController else { exit(1) }
+            let store = controller.store
+            var waited = 0
+            while (store.shots.isEmpty || store.indexing > 0) && waited < 60 {
+                await pause(0.5)
+                waited += 1
+            }
+            print("shots: \(store.shots.map(\.url.lastPathComponent))")
+            for shot in store.shots {
+                print("  quick actions in \(shot.url.lastPathComponent): \(store.links(for: shot).map(\.title))")
+            }
+
+            controller.toggle()
+            await pause(1)
+            snapshot(store.panelWindow, "opened")
+            store.selectAll(Array(store.visible))
+            print("selected all: \(store.selection.count), menu acts on \(store.group(for: store.shots[0]).count)")
+            store.togglePin(store.selectedShots)
+            print("pinned after pin all: \(store.shots.filter(store.isPinned).count)")
+            store.togglePin(store.selectedShots)
+            print("pinned after pin all again: \(store.shots.filter(store.isPinned).count)")
+            store.selection = []
+
+            let victim = store.shots[store.shots.count - 1]
+            store.togglePin(victim)
+            store.trash([victim])
+            await pause(1)
+            print("trashed one: file there \(exists(victim)), on shelf \(store.shots.contains(victim)), toast “\(store.toast?.text ?? "-")” undo \(store.toast?.undo ?? false)")
+            snapshot(store.panelWindow, "trashed")
+            store.undoTrash()
+            await pause(1)
+            print("after undo: file there \(exists(victim)), on shelf \(store.shots.contains(victim)), still pinned \(store.isPinned(victim)), toast “\(store.toast?.text ?? "-")”")
+            store.togglePin(victim)
+
+            let two = Array(store.shots.prefix(2))
+            store.trash(two)
+            await pause(1)
+            print("trashed two: \(two.filter(exists).count) left, toast “\(store.toast?.text ?? "-")”")
+            store.undoTrash()
+            await pause(1)
+            print("after undo: \(two.filter(exists).count) of 2 back")
+
+            store.float(store.shots[0])
+            await pause(1)
+            snapshot(store.floaterWindows.first, "floating")
+            for window in store.floaterWindows {
+                print("floating: \(Int(window.frame.width))×\(Int(window.frame.height)) visible \(window.isVisible) key \(window.isKeyWindow) level \(window.level.rawValue)")
+            }
+            store.floaterWindows.first?.close()
+            await pause(0.5)
+            print("floating after close: \(store.floaterWindows.count)")
+
+            store.markup(store.shots[0])
+            await pause(1)
+            let markup = NSApp.windows.filter { $0.isVisible && $0.title.hasPrefix("Markup") }
+            snapshot(markup.first, "markup")
+            print("markup editor: \(markup.map { "\($0.title) \(Int($0.frame.width))×\(Int($0.frame.height))" })")
+            markup.forEach { $0.close() }
+            exit(0)
         }
     }
 

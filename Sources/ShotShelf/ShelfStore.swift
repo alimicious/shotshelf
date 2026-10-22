@@ -15,7 +15,16 @@ enum ShortcutSlot {
 struct Toast: Equatable {
     let text: String
     let symbol: String
+    /// Shows an Undo button, for putting back what was just moved to the Trash.
+    var undo = false
     let id = UUID()
+}
+
+/// Shots just moved to the Trash, so Undo can put them back where they were.
+private struct Trashed {
+    let original: URL
+    let inTrash: URL
+    let wasPinned: Bool
 }
 
 @MainActor
@@ -29,7 +38,13 @@ final class ShelfStore: ObservableObject {
     /// Folders shown as chips under the grid; dropping a shot on one moves it there.
     @Published private(set) var folders: [URL]
     /// The text read from each shot, by path. Powers Copy Text, search and smart names.
-    @Published private(set) var texts: [String: String]
+    @Published private(set) var texts: [String: String] {
+        didSet { linkCache = [:] }
+    }
+    /// What the QR codes in each shot say, by path.
+    @Published private(set) var codes: [String: [String]] {
+        didSet { linkCache = [:] }
+    }
     /// How many shots are still waiting to have their text read.
     @Published private(set) var indexing = 0
     @Published private(set) var folderReadable = true
@@ -41,8 +56,13 @@ final class ShelfStore: ObservableObject {
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// The hovered shot, which arrow keys also move, so it doubles as the keyboard selection.
     @Published var hovered: URL?
+    /// Shots picked with ⌘-click or ⇧-click (or ⌘A), which the footer's actions and keys then act on
+    /// together. Shared by the shelf and search.
+    @Published var selection: Set<URL> = []
     /// The shot being dragged and what it's over, while rearranging or filing.
     @Published var dragging: URL?
+    /// True while the whole selection is being dragged, from the footer's stack.
+    @Published var draggingSelection = false
     @Published var dropTarget: URL?
     @Published var dropFolder: URL?
     @Published var confirmingTidy = false
@@ -77,6 +97,9 @@ final class ShelfStore: ObservableObject {
     /// The add/edit form for a preset, while it's open.
     @Published var presetEditor: PresetDraft?
     @Published var hoveredPreset: UUID?
+    /// The first-launch card. Nothing is read from the screenshot folder until it's dismissed, so
+    /// macOS asks for access only after the card has said why.
+    @Published private(set) var showWelcome = false
 
     let folder = ShotScanner.folder
     let iconAnimator = IconAnimator()
@@ -94,7 +117,13 @@ final class ShelfStore: ObservableObject {
     private var captureOverlay: CaptureOverlay?
     private var openHotKey: HotKey?
     private var searchHotKey: HotKey?
-    private var redactWindow: NSWindow?
+    private var markupWindow: NSWindow?
+    private var floaters: [FloatingShot] = []
+    /// What the last Trash or Tidy moved, until it's undone or something else is trashed.
+    private var lastTrashed: [Trashed] = []
+    /// Where the last ⌘- or ⇧-click landed, so the next ⇧-click selects the range from it.
+    private var selectionAnchor: URL?
+    private var linkCache: [String: [ShotLink]] = [:]
     private var knownPaths: Set<String>?
     /// Paths already treated as new arrivals, including the names they were renamed to.
     private var handled: Set<String> = []
@@ -110,6 +139,7 @@ final class ShelfStore: ObservableObject {
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
+        codes = Self.loadCodes()
         presets = Self.loadPresets()
         self.shots = Self.arranged(shots)
         freshSince = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: Prefs.lastSeen))
@@ -131,12 +161,13 @@ final class ShelfStore: ObservableObject {
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
+        codes = Self.loadCodes()
         presets = Self.loadPresets()
-        // On first launch, count only shots taken from now on as new.
-        if defaults.double(forKey: Prefs.lastSeen) == 0 { defaults.set(Date().timeIntervalSince1970, forKey: Prefs.lastSeen) }
-        watcher = FolderWatcher(folder) { [weak self] in
-            MainActor.assumeIsolated { self?.folderChanged() }
+        // People updating from before the welcome card have used the app already, so skip it for them.
+        if defaults.object(forKey: Prefs.welcomed) == nil {
+            defaults.set(defaults.double(forKey: Prefs.lastSeen) != 0, forKey: Prefs.welcomed)
         }
+        showWelcome = !defaults.bool(forKey: Prefs.welcomed) && ShotScanner.testFolder == nil
         applyHotKeys()
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
@@ -152,6 +183,17 @@ final class ShelfStore: ObservableObject {
             }
             return consumed ? nil : event
         }
+        if !showWelcome { start() }
+    }
+
+    /// Starts watching and reading the screenshot folder, which is when macOS asks for access to it.
+    private func start() {
+        let defaults = UserDefaults.standard
+        // On first launch, count only shots taken from now on as new.
+        if defaults.double(forKey: Prefs.lastSeen) == 0 { defaults.set(Date().timeIntervalSince1970, forKey: Prefs.lastSeen) }
+        watcher = FolderWatcher(folder) { [weak self] in
+            MainActor.assumeIsolated { self?.folderChanged() }
+        }
         Task {
             while !Task.isCancelled {
                 await refresh()
@@ -161,6 +203,13 @@ final class ShelfStore: ObservableObject {
                 try? await Task.sleep(for: .seconds(600))
             }
         }
+    }
+
+    func finishWelcome() {
+        guard showWelcome else { return }
+        showWelcome = false
+        UserDefaults.standard.set(true, forKey: Prefs.welcomed)
+        start()
     }
 
     var visible: ArraySlice<Shot> { shots.prefix(panelSize.slots) }
@@ -189,6 +238,7 @@ final class ShelfStore: ObservableObject {
         newCount = shots.filter { $0.date > lastSeen }.count
         let live = Set(shots.map(\.url))
         minis = minis.filter { live.contains($0.key) }
+        selection = selection.filter(live.contains)
         detectArrivals()
         indexText()
         await loadThumbnails()
@@ -279,33 +329,42 @@ final class ShelfStore: ObservableObject {
     private func read(_ shot: Shot, namingAfter app: String?) async {
         let url = shot.url
         reading.insert(url.path)
-        let lines = await Task.detached { ShotText.recognize(url) }.value
+        let (lines, found) = await Task.detached { (ShotText.recognize(url), ShotText.codes(url)) }.value
         reading.remove(url.path)
         texts[url.path] = lines.map(\.text).joined(separator: "\n")
+        codes[url.path] = found
         saveTexts()
         guard UserDefaults.standard.bool(forKey: Prefs.smartNames),
               let name = ShotText.smartName(lines, app: app, date: shot.date) else { return }
         rename(shot, to: name)
     }
 
-    /// Reads the text of any shot that doesn't have it yet, one at a time in the background.
+    /// Reads the text and codes of any shot that doesn't have them yet, one at a time in the
+    /// background. Shots read before codes were looked for only get the (quick) code check.
     private func indexText() {
         guard !isIndexing, !isPreview else { return }
-        let missing = shots.filter { texts[$0.url.path] == nil && !reading.contains($0.url.path) }
+        let missing = shots.filter {
+            (texts[$0.url.path] == nil || codes[$0.url.path] == nil) && !reading.contains($0.url.path)
+        }
         guard !missing.isEmpty else { return }
         isIndexing = true
         indexing = missing.count
         Task {
             for shot in missing {
                 let url = shot.url
-                let text = await Task.detached(priority: .utility) {
-                    ShotText.recognize(url).map(\.text).joined(separator: "\n")
+                let needsText = texts[url.path] == nil
+                let (text, found) = await Task.detached(priority: .utility) {
+                    (needsText ? ShotText.recognize(url).map(\.text).joined(separator: "\n") : nil, ShotText.codes(url))
                 }.value
-                if FileManager.default.fileExists(atPath: url.path) { texts[url.path] = text }
+                if FileManager.default.fileExists(atPath: url.path) {
+                    if let text { texts[url.path] = text }
+                    codes[url.path] = found
+                }
                 indexing -= 1
             }
             let live = Set(shots.map(\.url.path))
             texts = texts.filter { live.contains($0.key) }
+            codes = codes.filter { live.contains($0.key) }
             saveTexts()
             isIndexing = false
             indexing = 0
@@ -329,6 +388,46 @@ final class ShelfStore: ObservableObject {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.writeObjects([item])
         showToast("Copied image", symbol: "checkmark.circle.fill")
+    }
+
+    /// Several shots go on the clipboard as files: attachments in chat and mail, copies in Finder.
+    func copy(_ shots: [Shot]) {
+        guard shots.count > 1 else {
+            if let shot = shots.first { copy(shot) }
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects(shots.map { $0.url as NSURL })
+        showToast("Copied \(shots.count) images", symbol: "checkmark.circle.fill")
+    }
+
+    /// The macOS share menu (AirDrop, Messages, Mail and so on) for `shots`, at the pointer.
+    func share(_ shots: [Shot]) {
+        guard !shots.isEmpty, let window = NSApp.keyWindow ?? panelWindow, let view = window.contentView else { return }
+        let point = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        NSSharingServicePicker(items: shots.map(\.url))
+            .show(relativeTo: NSRect(x: point.x - 1, y: point.y - 1, width: 2, height: 2), of: view, preferredEdge: .minY)
+    }
+
+    /// Links, email addresses and QR codes found in a shot, for its quick actions.
+    func links(for shot: Shot) -> [ShotLink] {
+        let path = shot.url.path
+        if let cached = linkCache[path] { return cached }
+        let found = ShotText.links(text: texts[path] ?? "", codes: codes[path] ?? [])
+        linkCache[path] = found
+        return found
+    }
+
+    /// Opens a web link (from the text or a QR code), or copies an email address or a code's text.
+    func use(_ link: ShotLink) {
+        if let url = link.url {
+            closePanel?()
+            NSWorkspace.shared.open(url)
+        } else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(link.value, forType: .string)
+            showToast(link.kind == .email ? "Copied email address" : "Copied the code's text", symbol: link.symbol)
+        }
     }
 
     func copyText(_ shot: Shot) {
@@ -372,8 +471,54 @@ final class ShelfStore: ObservableObject {
         savePinned()
     }
 
+    /// Pins them all, or unpins them all if they're all pinned already.
+    func togglePin(_ shots: [Shot]) {
+        let pin = !shots.allSatisfy(isPinned)
+        for shot in shots {
+            if pin { pinned.insert(shot.url.path) } else { pinned.remove(shot.url.path) }
+        }
+        savePinned()
+    }
+
     func trash(_ shot: Shot) {
         trash([shot])
+    }
+
+    /// Moves shots to the Trash, with Undo in the toast (and ⌘Z) to put them back.
+    func trash(_ shots: [Shot]) {
+        let moved = moveToTrash(shots)
+        guard !moved.isEmpty else { return }
+        lastTrashed = moved
+        selection.subtract(moved.map(\.original))
+        showToast(moved.count == 1 ? "Moved to the Trash" : "Moved \(moved.count) to the Trash", symbol: "trash", undo: true)
+    }
+
+    var canUndoTrash: Bool { !lastTrashed.isEmpty }
+
+    /// Puts back what the last Trash or Tidy moved, with their pins and their spots on the shelf.
+    func undoTrash() {
+        guard !lastTrashed.isEmpty else { return }
+        var restored = 0
+        for item in lastTrashed where FileManager.default.fileExists(atPath: item.inTrash.path) {
+            // If its old name has been taken since, it comes back as "name 2".
+            let original = item.original
+            let dest = FileManager.default.fileExists(atPath: original.path)
+                ? ShotScanner.uniqueURL(in: original.deletingLastPathComponent(),
+                                        name: original.deletingPathExtension().lastPathComponent, ext: original.pathExtension)
+                : original
+            guard (try? FileManager.default.moveItem(at: item.inTrash, to: dest)) != nil else { continue }
+            handled.insert(dest.path)  // so it doesn't count as a new screenshot
+            if item.wasPinned { pinned.insert(dest.path) }
+            restored += 1
+        }
+        lastTrashed = []
+        savePinned()
+        switch restored {
+        case 0: showToast("Nothing left to put back", symbol: "exclamationmark.triangle")
+        case 1: showToast("Put back from the Trash", symbol: "arrow.uturn.backward")
+        default: showToast("Put back \(restored) from the Trash", symbol: "arrow.uturn.backward")
+        }
+        Task { await refresh() }
     }
 
     func smartRename(_ shot: Shot) {
@@ -400,6 +545,7 @@ final class ShelfStore: ObservableObject {
             savePinned()
         }
         texts[new] = texts.removeValue(forKey: old)
+        codes[new] = codes.removeValue(forKey: old)
         saveTexts()
         var order = UserDefaults.standard.stringArray(forKey: Prefs.order) ?? []
         if let i = order.firstIndex(of: old) {
@@ -407,38 +553,40 @@ final class ShelfStore: ObservableObject {
             UserDefaults.standard.set(order, forKey: Prefs.order)
         }
         if hovered == shot.url { hovered = dest }
+        if selection.remove(shot.url) != nil { selection.insert(dest) }
         Task { await refresh() }
     }
 
-    // MARK: - Redact
+    // MARK: - Markup
 
-    func redact(_ shot: Shot) {
-        guard let model = RedactModel(shot: shot) else {
+    /// Opens the markup editor: arrows, boxes, highlights, text and pixelated redactions, saved as a copy.
+    func markup(_ shot: Shot) {
+        guard let model = MarkupModel(shot: shot) else {
             showToast("Couldn't open that shot", symbol: "exclamationmark.triangle")
             return
         }
-        redactWindow?.close()
+        markupWindow?.close()
         closePanel?()
-        let view = RedactView(
+        let view = MarkupView(
             model: model,
             onCopy: { [weak self] data in
-                self?.copyImageData(data)
-                self?.redactWindow?.close()
+                self?.copyImageData(data, redactedOnly: model.redactsOnly)
+                self?.markupWindow?.close()
             },
             onSave: { [weak self] data in
-                self?.saveRedacted(data, from: shot)
-                self?.redactWindow?.close()
+                self?.saveMarkedUp(data, from: shot, redactedOnly: model.redactsOnly)
+                self?.markupWindow?.close()
             })
 
         // Fit the shot in at most 960×640, plus room for the padding and toolbar.
         let width = min(960, 640 * model.aspect)
-        let size = NSSize(width: max(520, width + 32), height: max(380, width / model.aspect + 32 + 56))
+        let size = NSSize(width: max(640, width + 32), height: max(420, width / model.aspect + 32 + 56))
         let hosting = NSHostingController(rootView: view)
         hosting.sizingOptions = []
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
-        window.title = "Redact – \(shot.url.deletingPathExtension().lastPathComponent)"
+        window.title = "Markup – \(shot.url.deletingPathExtension().lastPathComponent)"
         window.titlebarAppearsTransparent = true
         window.isReleasedWhenClosed = false
         window.contentViewController = hosting
@@ -446,24 +594,27 @@ final class ShelfStore: ObservableObject {
         window.center()
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
-        redactWindow = window
+        markupWindow = window
     }
 
-    private func copyImageData(_ data: Data) {
+    private func copyImageData(_ data: Data, redactedOnly: Bool) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setData(data, forType: .png)
-        showToast("Copied redacted image", symbol: "eye.slash")
+        showToast(redactedOnly ? "Copied redacted image" : "Copied marked-up image",
+                  symbol: redactedOnly ? "eye.slash" : "pencil.tip.crop.circle")
     }
 
-    /// Saves next to the original as "… (redacted).png", tagged as a screenshot so it lands on the shelf.
-    private func saveRedacted(_ data: Data, from shot: Shot) {
-        let name = shot.url.deletingPathExtension().lastPathComponent + " (redacted)"
+    /// Saves next to the original as "… (marked up).png", or "… (redacted).png" when all it has is
+    /// redactions, tagged as a screenshot so it lands on the shelf.
+    private func saveMarkedUp(_ data: Data, from shot: Shot, redactedOnly: Bool) {
+        let name = shot.url.deletingPathExtension().lastPathComponent + (redactedOnly ? " (redacted)" : " (marked up)")
         let dest = ShotScanner.uniqueURL(in: shot.url.deletingLastPathComponent(), name: name, ext: "png")
         handled.insert(dest.path)
         do {
             try data.write(to: dest)
             ShotScanner.tagAsScreenshot(dest)
-            showToast("Saved a redacted copy", symbol: "eye.slash")
+            showToast(redactedOnly ? "Saved a redacted copy" : "Saved a marked-up copy",
+                      symbol: redactedOnly ? "eye.slash" : "pencil.tip.crop.circle")
         } catch {
             showToast("Couldn't save the copy", symbol: "exclamationmark.triangle")
         }
@@ -490,19 +641,29 @@ final class ShelfStore: ObservableObject {
         saveFolders()
     }
 
-    /// Moves a shot into one of the folders, which takes it off the shelf.
     func file(_ shot: Shot, into folder: URL) {
-        let name = shot.url.deletingPathExtension().lastPathComponent
-        let dest = ShotScanner.uniqueURL(in: folder, name: name, ext: shot.url.pathExtension)
-        do {
-            try FileManager.default.moveItem(at: shot.url, to: dest)
-        } catch {
-            showToast("Couldn't move it to \(folder.lastPathComponent)", symbol: "exclamationmark.triangle")
-            return
+        file([shot], into: folder)
+    }
+
+    /// Moves shots into one of the folders, which takes them off the shelf.
+    func file(_ shots: [Shot], into folder: URL) {
+        var moved = 0
+        for shot in shots {
+            let name = shot.url.deletingPathExtension().lastPathComponent
+            let dest = ShotScanner.uniqueURL(in: folder, name: name, ext: shot.url.pathExtension)
+            guard (try? FileManager.default.moveItem(at: shot.url, to: dest)) != nil else { continue }
+            pinned.remove(shot.url.path)
+            texts[shot.url.path] = nil
+            codes[shot.url.path] = nil
+            selection.remove(shot.url)
+            moved += 1
         }
-        if pinned.remove(shot.url.path) != nil { savePinned() }
-        texts[shot.url.path] = nil
-        showToast("Moved to \(folder.lastPathComponent)", symbol: "folder.fill")
+        savePinned()
+        switch moved {
+        case 0: showToast("Couldn't move \(shots.count == 1 ? "it" : "them") to \(folder.lastPathComponent)", symbol: "exclamationmark.triangle")
+        case 1: showToast("Moved to \(folder.lastPathComponent)", symbol: "folder.fill")
+        default: showToast("Moved \(moved) to \(folder.lastPathComponent)", symbol: "folder.fill")
+        }
         Task { await refresh() }
     }
 
@@ -523,19 +684,91 @@ final class ShelfStore: ObservableObject {
         let days = UserDefaults.standard.integer(forKey: Prefs.autoTidyDays)
         guard days > 0 else { return }
         let cutoff = Date().addingTimeInterval(-Double(days) * 86400)
-        trash(shots.filter { $0.date < cutoff && !isPinned($0) })
+        moveToTrash(shots.filter { $0.date < cutoff && !isPinned($0) })
     }
 
-    /// Moves files to the Trash (never deletes them outright), so anything tidied can be put back.
-    private func trash(_ victims: [Shot]) {
-        guard !victims.isEmpty else { return }
+    /// Moves files to the Trash (never deletes them outright), so anything tidied can be put back,
+    /// and returns where each one went.
+    @discardableResult
+    private func moveToTrash(_ victims: [Shot]) -> [Trashed] {
+        guard !victims.isEmpty else { return [] }
+        var moved: [Trashed] = []
         for shot in victims {
-            try? FileManager.default.trashItem(at: shot.url, resultingItemURL: nil)
-            pinned.remove(shot.url.path)
+            var inTrash: NSURL?
+            guard (try? FileManager.default.trashItem(at: shot.url, resultingItemURL: &inTrash)) != nil,
+                  let inTrash else { continue }
+            let wasPinned = pinned.remove(shot.url.path) != nil
+            moved.append(Trashed(original: shot.url, inTrash: inTrash as URL, wasPinned: wasPinned))
         }
         savePinned()
         Task { await refresh() }
+        return moved
     }
+
+    // MARK: - Selection
+
+    /// The selected shots, in shelf order.
+    var selectedShots: [Shot] { shots.filter { selection.contains($0.url) } }
+
+    /// What a menu opened on `shot` acts on: the whole selection when `shot` is part of it.
+    func group(for shot: Shot) -> [Shot] {
+        selection.count > 1 && selection.contains(shot.url) ? selectedShots : [shot]
+    }
+
+    /// A click on a shot in `list`: ⌘ adds or removes it, ⇧ adds the run from the last one clicked,
+    /// and a plain click clears the selection.
+    func click(_ shot: Shot, in list: [Shot]) {
+        let mods = NSEvent.modifierFlags
+        if mods.contains(.shift), let anchor = selectionAnchor,
+           let a = list.firstIndex(where: { $0.url == anchor }), let b = list.firstIndex(of: shot) {
+            selection.formUnion(list[min(a, b)...max(a, b)].map(\.url))
+        } else if mods.contains(.command) || mods.contains(.shift) {
+            if selection.remove(shot.url) == nil { selection.insert(shot.url) }
+            selectionAnchor = shot.url
+        } else {
+            if !selection.isEmpty { selection = [] }
+            selectionAnchor = shot.url
+        }
+    }
+
+    func selectAll(_ list: [Shot]) {
+        selection = Set(list.map(\.url))
+    }
+
+    /// Keys for the whole selection: Space previews it, Delete trashes it, ⌘C copies it, P pins it.
+    private func actOnSelection(_ event: NSEvent) -> Bool {
+        let group = selectedShots
+        guard !group.isEmpty else { return false }
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        switch (event.keyCode, mods, key) {
+        case (49, [], _): AppDelegate.toggleQuickLook(group.map(\.url), at: 0)
+        case (51, [], _), (51, .command, _), (117, [], _): trash(group)
+        case (_, .command, "c"): copy(group)
+        case (_, [], "p"): togglePin(group)
+        default: return false
+        }
+        return true
+    }
+
+    // MARK: - Floating
+
+    /// Keeps a shot on screen above other windows, to refer to while you work.
+    func float(_ shot: Shot) {
+        guard let floater = FloatingShot(shot: shot, cascade: floaters.count,
+                                         onCopy: { [weak self] in self?.copy(shot) },
+                                         onClose: { [weak self] closed in self?.floaters.removeAll { $0 === closed } })
+        else {
+            showToast("Couldn't open that shot", symbol: "exclamationmark.triangle")
+            return
+        }
+        floaters.append(floater)
+        closePanel?()
+        floater.show()
+    }
+
+    /// For `--selftest-actions`: the floating shots' windows.
+    var floaterWindows: [NSWindow] { floaters.map(\.window) }
 
     // MARK: - Keyboard
 
@@ -543,15 +776,24 @@ final class ShelfStore: ObservableObject {
         let shots = Array(visible)
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased()
-        if event.keyCode == 53 {  // Escape
-            closePanel?()
+        if event.keyCode == 53 {  // Escape: clear the selection first, then close
+            if !selection.isEmpty { selection = [] } else { closePanel?() }
             return true
         }
         if key == "f", mods == .command {
             showAll = true
             return true
         }
+        if key == "z", mods == .command, canUndoTrash {
+            undoTrash()
+            return true
+        }
+        if key == "a", mods == .command {
+            selectAll(shots)
+            return true
+        }
         guard !shots.isEmpty else { return false }
+        if actOnSelection(event) { return true }
         let index = hovered.flatMap { url in shots.firstIndex { $0.url == url } }
         if let next = Self.neighbour(of: index, keyCode: event.keyCode, count: shots.count, columns: panelSize.columns) {
             hovered = shots[next].url
@@ -571,8 +813,8 @@ final class ShelfStore: ObservableObject {
         let index = searchSelection.flatMap { url in results.firstIndex { $0.url == url } }
         let inField = event.window?.firstResponder is NSText
 
-        if event.keyCode == 53 {  // Escape: clear the search first, then close
-            if inField, !query.isEmpty { query = "" } else { showAll = false }
+        if event.keyCode == 53 {  // Escape: clear the search first, then the selection, then close
+            if inField, !query.isEmpty { query = "" } else if !selection.isEmpty { selection = [] } else { showAll = false }
             return true
         }
         if event.charactersIgnoringModifiers?.lowercased() == "f", mods == .command {
@@ -583,6 +825,15 @@ final class ShelfStore: ObservableObject {
             guard [125, 36].contains(event.keyCode), !results.isEmpty else { return false }
             searchSelection = results[index ?? 0].url
             searchFocused = false
+            return true
+        }
+        // ⌘Z and ⌘A stay with the text while typing in the field.
+        if event.charactersIgnoringModifiers?.lowercased() == "z", mods == .command, canUndoTrash {
+            undoTrash()
+            return true
+        }
+        if event.charactersIgnoringModifiers?.lowercased() == "a", mods == .command {
+            selectAll(results)
             return true
         }
         guard !results.isEmpty else { return false }
@@ -604,6 +855,7 @@ final class ShelfStore: ObservableObject {
             }
             return true
         default:
+            if actOnSelection(event) { return true }
             if let shot = index.map({ results[$0] }) ?? (event.keyCode == 49 ? results.first : nil),
                act(on: shot, in: results, event: event, select: { self.searchSelection = $0 }) {
                 return true
@@ -620,7 +872,8 @@ final class ShelfStore: ObservableObject {
     }
 
     /// The keys that act on one shot, shared by the shelf and search: Space previews (stepping
-    /// through `list`), Return opens, Delete trashes, ⌘C copies, T copies text, P pins, R redacts.
+    /// through `list`), Return opens, Delete trashes, ⌘C copies, T copies text, P pins, R marks up
+    /// and F floats it on screen.
     private func act(on shot: Shot, in list: [Shot], event: NSEvent, select: @escaping (URL?) -> Void) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased()
@@ -636,7 +889,8 @@ final class ShelfStore: ObservableObject {
         case (_, .command, "c"): copy(shot)
         case (_, [.command, .shift], "c"), (_, [], "t"): copyText(shot)
         case (_, [], "p"): togglePin(shot)
-        case (_, [], "r"): redact(shot)
+        case (_, [], "r"): markup(shot)
+        case (_, [], "f"): float(shot)
         default: return false
         }
         return true
@@ -738,6 +992,12 @@ final class ShelfStore: ObservableObject {
         guard isPreview else { return }
         let sizes = [(1280, 720), (1920, 1080), (1080, 1080), (800, 600), (1200, 630), (1080, 1350)]
         presets = (0..<count).map { i in CapturePreset(width: sizes[i % sizes.count].0, height: sizes[i % sizes.count].1) }
+    }
+
+    /// For `--render --welcome`: shows the first-launch card.
+    func showPreviewWelcome() {
+        guard isPreview else { return }
+        showWelcome = true
     }
 
     /// For `--render --extras`: shows the update pill and sample presets, saving nothing.
@@ -884,11 +1144,12 @@ final class ShelfStore: ObservableObject {
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
-    func showToast(_ text: String, symbol: String) {
-        let toast = Toast(text: text, symbol: symbol)
+    func showToast(_ text: String, symbol: String, undo: Bool = false) {
+        let toast = Toast(text: text, symbol: symbol, undo: undo)
         self.toast = toast
         Task {
-            try? await Task.sleep(for: .seconds(1.8))
+            // One with Undo stays long enough to reach for it.
+            try? await Task.sleep(for: .seconds(undo ? 6 : 1.8))
             if self.toast == toast { self.toast = nil }
         }
     }
@@ -930,21 +1191,32 @@ final class ShelfStore: ObservableObject {
         UserDefaults.standard.set(folders.map(\.path), forKey: Prefs.folders)
     }
 
-    /// Recognised text lives in Application Support so search works straight away after a relaunch.
-    private static let textsURL: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ShotShelf", isDirectory: true)
+    /// Recognised text and codes live in Application Support so search and quick actions work
+    /// straight away after a relaunch. Tests on sample shots keep theirs beside the samples.
+    private static let supportFolder: URL = {
+        let dir = ShotScanner.testFolder?.appendingPathComponent(".ShotShelf", isDirectory: true)
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("ShotShelf", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("text.json")
+        return dir
     }()
+    private static var textsURL: URL { supportFolder.appendingPathComponent("text.json") }
+    private static var codesURL: URL { supportFolder.appendingPathComponent("codes.json") }
 
     private static func loadTexts() -> [String: String] {
         guard let data = try? Data(contentsOf: textsURL) else { return [:] }
         return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
     }
 
+    private static func loadCodes() -> [String: [String]] {
+        guard let data = try? Data(contentsOf: codesURL) else { return [:] }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    }
+
+    /// Saves the text and codes read so far.
     private func saveTexts() {
         guard !isPreview else { return }
         try? JSONEncoder().encode(texts).write(to: Self.textsURL, options: .atomic)
+        try? JSONEncoder().encode(codes).write(to: Self.codesURL, options: .atomic)
     }
 }

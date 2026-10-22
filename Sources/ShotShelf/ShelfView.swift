@@ -20,6 +20,11 @@ struct ShelfView: View {
         }
         .padding(16)
         .frame(width: store.panelSize.width)
+        // On first launch the welcome takes the shelf's place, at the shelf's size.
+        .opacity(store.showWelcome ? 0 : 1)
+        .allowsHitTesting(!store.showWelcome)
+        .overlay { if store.showWelcome { WelcomeView(store: store) } }
+        .animation(.smooth(duration: 0.35), value: store.showWelcome)
     }
 
     // MARK: - Header
@@ -111,13 +116,19 @@ struct ShelfView: View {
     }
 
     private func toastView(_ toast: Toast) -> some View {
-        Label(toast.text, systemImage: toast.symbol)
-            .font(.caption.weight(.semibold))
-            .lineLimit(1)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .glassEffect(.regular, in: .capsule)
-            .padding(.top, 10)
-            .transition(.move(edge: .top).combined(with: .opacity))
+        HStack(spacing: 10) {
+            Label(toast.text, systemImage: toast.symbol).lineLimit(1)
+            if toast.undo {
+                Button("Undo") { store.undoTrash() }
+                    .buttonStyle(.borderless).foregroundStyle(terracotta)
+                    .help("Put it back (⌘Z)")
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .glassEffect(toast.undo ? .regular.interactive() : .regular, in: .capsule)
+        .padding(.top, 10)
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 
     private var emptyState: some View {
@@ -160,9 +171,11 @@ struct ShelfView: View {
 
     private var footer: some View {
         let count = store.tidyCandidates.count
-        // Confirming swaps the row's contents in place, keeping the panel the same height.
+        // Confirming and selecting swap the row's contents in place, keeping the panel the same height.
         return HStack(spacing: 8) {
-            if store.confirmingTidy {
+            if !store.selection.isEmpty {
+                selectionBar
+            } else if store.confirmingTidy {
                 Text("Move \(count) older shot\(count == 1 ? "" : "s") to the Trash?").font(.caption.weight(.medium))
                 Spacer()
                 Button("Cancel") { store.confirmingTidy = false }
@@ -183,6 +196,34 @@ struct ShelfView: View {
         }
         .frame(height: 28)
         .animation(hoverSpring, value: store.confirmingTidy)
+        .animation(hoverSpring, value: store.selection.isEmpty)
+    }
+
+    /// What you can do with the shots you've picked. The stack on the left drags them all at once.
+    @ViewBuilder
+    private var selectionBar: some View {
+        let group = store.selectedShots
+        Label("\(store.selection.count) selected", systemImage: "rectangle.stack.fill")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .glassEffect(.regular.tint(terracotta.opacity(0.3)).interactive(), in: .capsule)
+            .overlay { SelectionDragArea(store: store) }
+            .help("Drag to put all \(store.selection.count) into an app or onto a folder chip")
+        Spacer(minLength: 4)
+        GlassEffectContainer(spacing: 6) {
+            HStack(spacing: 6) {
+                FooterButton(systemName: "doc.on.doc", help: "Copy all (⌘C)") { store.copy(group) }
+                FooterButton(systemName: "square.and.arrow.up", help: "Share") { store.share(group) }
+                Menu { SelectionMenu(shots: group, store: store) } label: {
+                    Image(systemName: "ellipsis").font(.system(size: 11, weight: .medium)).frame(width: 14, height: 14)
+                }
+                .menuStyle(.button).buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+                .menuIndicator(.hidden).fixedSize()
+                .help("More")
+                FooterButton(systemName: "trash", help: "Move to the Trash (⌫)") { store.trash(group) }
+                FooterButton(systemName: "xmark", help: "Deselect (Esc)") { store.selection = [] }
+            }
+        }
     }
 
     // MARK: - Settings
@@ -259,6 +300,7 @@ private struct ShotCell: View {
     let isHero: Bool
 
     private var isHovered: Bool { store.hovered == shot.url }
+    private var isSelected: Bool { store.selection.contains(shot.url) }
     private var isDropTarget: Bool { store.dropTarget == shot.url && store.dragging != shot.url }
     private var radius: CGFloat { isHero ? 18 : 12 }
 
@@ -282,10 +324,13 @@ private struct ShotCell: View {
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: radius))
         .overlay {
-            // A hairline edge like the system's glass, which turns terracotta while hovered or targeted.
+            // A hairline edge like the system's glass, which turns terracotta while hovered, selected
+            // or targeted. Selected shots also take on a wash of it.
             RoundedRectangle(cornerRadius: radius)
-                .strokeBorder(isDropTarget || isHovered ? AnyShapeStyle(terracotta) : AnyShapeStyle(.white.opacity(0.12)),
-                              lineWidth: isDropTarget ? 2.5 : isHovered ? 1.5 : 1)
+                .fill(terracotta.opacity(isSelected ? 0.14 : 0))
+                .strokeBorder(isDropTarget || isHovered || isSelected ? AnyShapeStyle(terracotta) : AnyShapeStyle(.white.opacity(0.12)),
+                              lineWidth: isDropTarget || isSelected ? 2.5 : isHovered ? 1.5 : 1)
+                .allowsHitTesting(false)
         }
         .overlay(alignment: .topLeading) { badges }
         .overlay(alignment: .topTrailing) { if isHero { age } }
@@ -300,7 +345,14 @@ private struct ShotCell: View {
         .onHover { inside in
             if inside { store.hovered = shot.url } else if isHovered { store.hovered = nil }
         }
-        .onTapGesture(count: 2) { store.open(shot) }
+        .onTapGesture {
+            // One handler for both, so a click that selects doesn't wait to rule out a double-click.
+            if NSApp.currentEvent?.clickCount == 2 {
+                store.open(shot)
+            } else {
+                store.click(shot, in: Array(store.visible))
+            }
+        }
         .onDrag {
             store.dragging = shot.url
             return NSItemProvider(contentsOf: shot.url) ?? NSItemProvider()
@@ -320,6 +372,11 @@ private struct ShotCell: View {
 
     private var badges: some View {
         HStack(spacing: 5) {
+            if isSelected {
+                Image(systemName: "checkmark").font(.system(size: 8, weight: .heavy)).foregroundStyle(.white)
+                    .frame(width: 18, height: 18)
+                    .glassEffect(.regular.tint(terracotta), in: .circle)
+            }
             if shot.date > store.freshSince {
                 Circle().fill(terracotta).frame(width: 8, height: 8)
                     .overlay(Circle().strokeBorder(.white.opacity(0.9), lineWidth: 1.2))
@@ -340,6 +397,10 @@ private struct ShotCell: View {
             HStack(spacing: 0) {
                 CellButton(systemName: "doc.on.doc", help: "Copy image (⌘C)") { store.copy(shot) }
                 CellButton(systemName: "text.viewfinder", help: "Copy text (T)") { store.copyText(shot) }
+                // A link, email address or QR code found in the shot gets a button of its own.
+                if let link = store.links(for: shot).first {
+                    CellButton(systemName: link.symbol, help: link.title) { store.use(link) }
+                }
                 CellButton(systemName: "eye", help: "Quick Look (Space)") { store.quickLook(shot) }
                 Menu { ShotMenu(shot: shot, store: store) } label: {
                     Image(systemName: "ellipsis").font(.system(size: 10, weight: .semibold)).frame(width: 20, height: 18)
@@ -362,7 +423,7 @@ private struct RearrangeDrop: DropDelegate {
     let target: Shot
     let store: ShelfStore
 
-    func validateDrop(info: DropInfo) -> Bool { store.dragging != nil }
+    func validateDrop(info: DropInfo) -> Bool { store.dragging != nil && !store.draggingSelection }
     func dropEntered(info: DropInfo) { store.dropTarget = target.url }
     func dropExited(info: DropInfo) { if store.dropTarget == target.url { store.dropTarget = nil } }
     func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
@@ -375,7 +436,8 @@ private struct RearrangeDrop: DropDelegate {
     }
 }
 
-/// Everything you can do with a shot, for the ⋯ button and right-click menus.
+/// Everything you can do with a shot, for the ⋯ button and right-click menus. On a shot that's part
+/// of a selection, it acts on the whole selection instead.
 struct ShotMenu: View {
     let shot: Shot
     @ObservedObject var store: ShelfStore
@@ -383,6 +445,21 @@ struct ShotMenu: View {
     var results: [Shot]? = nil
 
     var body: some View {
+        let group = store.group(for: shot)
+        if group.count > 1 {
+            Button("Copy \(group.count) Images", systemImage: "doc.on.doc") { store.copy(group) }
+            Button("Share \(group.count) Shots…", systemImage: "square.and.arrow.up") { store.share(group) }
+            Divider()
+            SelectionMenu(shots: group, store: store)
+            Divider()
+            Button("Move \(group.count) to Trash", systemImage: "trash", role: .destructive) { store.trash(group) }
+        } else {
+            single
+        }
+    }
+
+    @ViewBuilder
+    private var single: some View {
         Button("Copy Image", systemImage: "doc.on.doc") { store.copy(shot) }
         Button("Copy Text", systemImage: "text.viewfinder") { store.copyText(shot) }
         Button("Quick Look", systemImage: "eye") {
@@ -392,11 +469,20 @@ struct ShotMenu: View {
                 store.quickLook(shot)
             }
         }
+        Button("Float on Screen", systemImage: "pip.enter") { store.float(shot) }
+        Button("Share…", systemImage: "square.and.arrow.up") { store.share([shot]) }
+        let links = store.links(for: shot)
+        if !links.isEmpty {
+            Divider()
+            ForEach(links) { link in
+                Button(link.title, systemImage: link.symbol) { store.use(link) }
+            }
+        }
         Divider()
         Button(store.isPinned(shot) ? "Unpin" : "Pin", systemImage: store.isPinned(shot) ? "pin.slash" : "pin") {
             store.togglePin(shot)
         }
-        Button("Redact…", systemImage: "eye.slash") { store.redact(shot) }
+        Button("Markup and Redact…", systemImage: "pencil.tip.crop.circle") { store.markup(shot) }
         Button("Rename from Text", systemImage: "character.cursor.ibeam") { store.smartRename(shot) }
         if !store.folders.isEmpty {
             Menu("Move to", systemImage: "folder") {
@@ -408,6 +494,31 @@ struct ShotMenu: View {
         Button("Show in Finder", systemImage: "magnifyingglass") { store.reveal(shot) }
         Divider()
         Button("Move to Trash", systemImage: "trash", role: .destructive) { store.trash(shot) }
+    }
+}
+
+/// The actions for several shots at once that don't fit in the footer's buttons. Also in the
+/// right-click menu of any selected shot.
+struct SelectionMenu: View {
+    let shots: [Shot]
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        let allPinned = shots.allSatisfy(store.isPinned)
+        Button(allPinned ? "Unpin \(shots.count)" : "Pin \(shots.count)", systemImage: allPinned ? "pin.slash" : "pin") {
+            store.togglePin(shots)
+        }
+        if !store.folders.isEmpty {
+            Menu("Move \(shots.count) to", systemImage: "folder") {
+                ForEach(store.folders, id: \.self) { folder in
+                    Button(folder.lastPathComponent) { store.file(shots, into: folder) }
+                }
+            }
+        }
+        Button("Show in Finder", systemImage: "magnifyingglass") {
+            NSWorkspace.shared.activateFileViewerSelecting(shots.map(\.url))
+        }
+        Button("Deselect All", systemImage: "xmark.circle") { store.selection = [] }
     }
 }
 
@@ -446,6 +557,10 @@ private struct FolderDrop: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         defer { store.dragging = nil; store.dropFolder = nil }
+        if store.draggingSelection {
+            store.file(store.selectedShots, into: folder)
+            return true
+        }
         guard let url = store.dragging, let shot = store.shots.first(where: { $0.url == url }) else { return false }
         store.file(shot, into: folder)
         return true
@@ -561,6 +676,129 @@ private struct ShortcutRow: View {
                     .help("Remove this shortcut")
             }
         }
+    }
+}
+
+/// The first-launch welcome, in the shelf's place until Get Started. It explains the basics and why
+/// macOS is about to ask for access to the screenshot folder, which is only read after it.
+private struct WelcomeView: View {
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
+                    .frame(width: 34, height: 34)
+                    .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Welcome to ShotShelf").font(.headline)
+                    Text("Your latest screenshots, one click away").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 14) {
+                if let shortcut = store.shortcut(for: .open) {
+                    row("command", "Press \(shortcut.display) in any app, or click the polaroid in the menu bar, to open this shelf.")
+                } else {
+                    row("menubar.arrow.up.rectangle", "Click the polaroid in the menu bar to open this shelf.")
+                }
+                row("hand.point.up.left", "Hover a shot to copy it or the text in it, or drag it straight into any app.")
+                row("checkmark", "⌘-click to pick several, then copy, share or trash them together.")
+                row("pencil.tip.crop.circle", "Press R to mark a shot up or redact it, or F to float it above your windows.")
+                row("lock", "Everything stays on your Mac. Next, macOS asks to let ShotShelf see your \(store.folder.lastPathComponent) folder, where your screenshots are saved.")
+            }
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("Get Started") { store.finishWelcome() }
+                    .buttonStyle(.glassProminent).tint(terracotta)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .transition(.opacity)
+    }
+
+    private func row(_ symbol: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 12, weight: .semibold)).foregroundStyle(terracotta)
+                .frame(width: 28, height: 28)
+                .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .circle)
+            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
+        }
+    }
+}
+
+/// A small round glass button for the footer's selection actions.
+private struct FooterButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName).font(.system(size: 11, weight: .medium)).frame(width: 14, height: 14)
+        }
+        .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+        .help(help)
+    }
+}
+
+/// Drags the whole selection out as one stack of files: into another app (as copies), or onto a
+/// folder chip to move them there. SwiftUI's drags carry a single item, so this is AppKit, laid
+/// invisibly over the footer's "selected" label.
+private struct SelectionDragArea: NSViewRepresentable {
+    @ObservedObject var store: ShelfStore
+
+    func makeNSView(context: Context) -> SelectionDragView {
+        let view = SelectionDragView()
+        view.store = store
+        return view
+    }
+
+    func updateNSView(_ view: SelectionDragView, context: Context) {
+        view.store = store
+    }
+}
+
+final class SelectionDragView: NSView, NSDraggingSource {
+    weak var store: ShelfStore?
+    private var mouseDown: NSEvent?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDown = event
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let down = mouseDown, let store, !store.selectedShots.isEmpty else { return }
+        mouseDown = nil
+        let start = convert(down.locationInWindow, from: nil)
+        let items = store.selectedShots.enumerated().map { i, shot -> NSDraggingItem in
+            let item = NSDraggingItem(pasteboardWriter: shot.url as NSURL)
+            let image = store.thumbnails[shot.url] ?? store.minis[shot.url] ?? NSWorkspace.shared.icon(forFile: shot.url.path)
+            let height = min(max(80 * image.size.height / max(image.size.width, 1), 40), 100)
+            let offset = CGFloat(min(i, 4)) * 4
+            item.setDraggingFrame(NSRect(x: start.x - 40 + offset, y: start.y - height / 2 - offset, width: 80, height: height),
+                                  contents: image)
+            return item
+        }
+        store.dragging = store.selectedShots.first?.url
+        store.draggingSelection = true
+        beginDraggingSession(with: items, event: down, source: self).draggingFormation = .pile
+    }
+
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        // Other apps get copies, so screenshots never vanish from the shelf by surprise; folder
+        // chips move them.
+        context == .withinApplication ? [.move, .copy] : .copy
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        store?.dragging = nil
+        store?.draggingSelection = false
     }
 }
 

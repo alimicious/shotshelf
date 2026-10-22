@@ -106,6 +106,13 @@ final class StatusController: NSObject {
                 MainActor.assumeIsolated { show ? self?.showSearch() : self?.hideSearch() }
             }
             .store(in: &subscriptions)
+
+        // On first launch the shelf opens by itself, with the welcome card.
+        if store.showWelcome {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                MainActor.assumeIsolated { self.show() }
+            }
+        }
     }
 
     /// Opens search beside the shelf: to its left, or its right when there's no room.
@@ -132,9 +139,9 @@ final class StatusController: NSObject {
 
     /// A panel's rounded glass, inside a glass container like the capture bar's pieces. Glass renders
     /// its edge differently in and out of a container, so every surface goes through one.
-    private static func glassSurface(_ content: NSView) -> NSView {
+    static func glassSurface(_ content: NSView, cornerRadius: CGFloat = 24) -> NSView {
         let glass = NSGlassEffectView()
-        glass.cornerRadius = 24
+        glass.cornerRadius = cornerRadius
         glass.contentView = content
         glass.autoresizingMask = [.width, .height]
         let container = NSGlassEffectContainerView()
@@ -312,6 +319,7 @@ final class StatusController: NSObject {
         store.showAll = false
         store.presetEditor = nil
         store.hovered = nil
+        store.selection = []
     }
 }
 

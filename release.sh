@@ -40,8 +40,12 @@ git push
 gh release create "$TAG" "$ZIP" "$ZIP.sig" --target "$(git rev-parse HEAD)" --title "ShotShelf $VERSION" --notes-file - <<NOTES
 A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up big with the six before it underneath: drag one into any app to share it, onto another shot to rearrange, or onto a folder chip to file it away.
 
-- **Copy the image or the text in it** (read on your Mac with Apple's Vision), Quick Look, pin, redact private bits, or send to the Trash.
-- **⌥⌘S** opens the shelf from anywhere, and you can record your own shortcuts for it and for jumping straight to search. Inside, arrows move, Space previews, ⌘C copies, ⌫ trashes and Esc closes.
+- **Copy the image or the text in it** (read on your Mac with Apple's Vision), Quick Look, pin, share, or send to the Trash, with Undo.
+- **Mark up** with arrows, boxes, highlights and text, or pixelate private bits, and save a copy.
+- **Float a shot on screen** above your other windows, to refer to while you work.
+- **Links, email addresses and QR codes** in a shot get a button to open or copy them.
+- **Select several** with ⌘-click to copy, share, file, drag or trash them together.
+- **⌥⌘S** opens the shelf from anywhere, and you can record your own shortcuts for it and for jumping straight to search. Inside, arrows move, Space previews, ⌘C copies, ⌫ trashes, ⌘Z puts back and Esc closes.
 - **Smart names:** new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". You can turn this off in settings (the gear).
 - **Search** every screenshot by the words inside it, then drag results onto the shelf or click the eye to see them bigger.
 - **Small, Medium or Large** panel: bigger panels show bigger tiles and more of them.

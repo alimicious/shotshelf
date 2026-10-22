@@ -10,8 +10,12 @@ struct Shot: Identifiable, Hashable {
 }
 
 enum ShotScanner {
+    /// Set by `--folder <dir>` so tests run against sample shots instead of your real ones.
+    static var testFolder: URL?
+
     /// Where macOS saves screenshots: the custom location from the Screenshot app's options, else the Desktop.
     static var folder: URL {
+        if let testFolder { return testFolder }
         if let path = CFPreferencesCopyAppValue("location" as CFString, "com.apple.screencapture" as CFString) as? String,
            !path.isEmpty {
             return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
@@ -94,6 +98,35 @@ enum ShotText {
         return unique.joined(separator: " – ") + " " + time
     }
 
+    /// What QR codes (and other barcodes) in an image say. Much quicker than reading the text.
+    static func codes(_ url: URL) -> [String] {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [] }
+        let request = VNDetectBarcodesRequest()
+        try? VNImageRequestHandler(cgImage: image).perform([request])
+        var seen = Set<String>()
+        return (request.results ?? []).compactMap(\.payloadStringValue).filter { seen.insert($0).inserted }
+    }
+
+    /// Links and email addresses in a shot's text, then what its codes say, for its quick actions.
+    static func links(text: String, codes: [String]) -> [ShotLink] {
+        var links: [ShotLink] = []
+        if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+            let range = NSRange(text.startIndex..., in: text)
+            for match in detector.matches(in: text, range: range) {
+                guard let url = match.url else { continue }
+                if url.scheme == "mailto" {
+                    links.append(ShotLink(kind: .email, value: String(url.absoluteString.dropFirst("mailto:".count))))
+                } else if ["http", "https"].contains(url.scheme) {
+                    links.append(ShotLink(kind: .web, value: url.absoluteString))
+                }
+            }
+        }
+        links += codes.map { ShotLink(kind: .code, value: $0) }
+        var seen = Set<String>()
+        return Array(links.filter { seen.insert($0.value).inserted }.prefix(6))
+    }
+
     private static func score(_ line: TextLine) -> CGFloat {
         line.height * (line.top < 0.4 ? 1.3 : 1)
     }
@@ -108,6 +141,44 @@ enum ShotText {
             if let space = name.lastIndex(of: " ") { name = String(name[..<space]) }
         }
         return name.trimmingCharacters(in: .punctuationCharacters.union(.whitespaces))
+    }
+}
+
+/// Something worth acting on in a shot: a link to open, or an email address or a code's text to copy.
+struct ShotLink: Hashable, Identifiable {
+    enum Kind { case web, email, code }
+    let kind: Kind
+    let value: String
+    var id: String { value }
+
+    /// A QR code that holds a web address opens it, like a link in the text does.
+    var url: URL? {
+        guard let url = URL(string: value), ["http", "https"].contains(url.scheme) else { return nil }
+        return url
+    }
+
+    var title: String {
+        if let url { return (kind == .code ? "Open QR Link " : "Open ") + Self.short(url) }
+        switch kind {
+        case .email: return "Copy \(value)"
+        default: return "Copy QR Code Text"
+        }
+    }
+
+    var symbol: String {
+        switch kind {
+        case .web: return "link"
+        case .email: return "envelope"
+        case .code: return "qrcode"
+        }
+    }
+
+    /// "example.com/docs/guide" rather than the whole address with its scheme and query.
+    private static func short(_ url: URL) -> String {
+        let host = (url.host ?? "").replacingOccurrences(of: "www.", with: "")
+        let path = url.path == "/" ? "" : url.path
+        let full = host + path
+        return full.count > 36 ? String(full.prefix(35)) + "…" : full
     }
 }
 
