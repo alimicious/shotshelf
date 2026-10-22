@@ -52,6 +52,7 @@ final class StatusController: NSObject {
         let barContainer = NSGlassEffectContainerView()
         barContainer.spacing = 8  // less than the gap, so the pieces stay apart at rest
         barContainer.contentView = barStack
+        Self.catchClicks(on: barContainer, cornerRadius: Self.barHeight / 2)
         bar = ShelfPanel(contentView: barContainer, size: NSSize(width: 360, height: Self.barHeight))
         super.init()
 
@@ -137,7 +138,19 @@ final class StatusController: NSObject {
         glass.autoresizingMask = [.width, .height]
         let container = NSGlassEffectContainerView()
         container.contentView = glass
+        container.wantsLayer = true
+        Self.catchClicks(on: container, cornerRadius: glass.cornerRadius)
         return container
+    }
+
+    /// The glass is drawn by the window server, not into the window's own pixels, and macOS 26 lets
+    /// clicks fall through a transparent window wherever its pixels are see-through, so they went to
+    /// the app behind. A practically invisible backing, shaped like the glass, gives every click a
+    /// pixel to land on (ShelfPanel also opts out of click-through outright).
+    private static func catchClicks(on view: NSView, cornerRadius: CGFloat) {
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
+        view.layer?.cornerRadius = cornerRadius
     }
 
     /// For `--selftest`: whether the shelf's glass fills its window.
@@ -283,6 +296,9 @@ final class ShelfPanel: NSPanel {
         self.contentView = contentView
         isOpaque = false
         backgroundColor = .clear
+        // Set explicitly: left at its default, a transparent window passes clicks through any
+        // see-through pixels, and on macOS 26 that included the glass.
+        ignoresMouseEvents = false
         // No window shadow: macOS works it out from the window's rectangle (and before the glass has
         // drawn, on first open), which leaves hard square corners around rounded glass. The glass
         // gives every panel the same soft rounded edge instead.
