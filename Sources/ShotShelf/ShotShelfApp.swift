@@ -168,6 +168,7 @@ struct ShotShelfApp: App {
             after(1.5) {
                 print("after toggle: \(visibleWindows())")
                 print("open shortcut registered: \(controller()?.store.hotKeyRegistered ?? false)")
+                print("shelf: \(controller()?.panelSummary ?? "-")")
                 print("bar at rest: \(controller()?.barSummary ?? "-")")
                 controller()?.store.newPreset()
                 after(0.9) {

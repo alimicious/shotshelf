@@ -33,15 +33,9 @@ final class StatusController: NSObject {
     init(store: ShelfStore) {
         self.store = store
         hosting = NSHostingView(rootView: ShelfView(store: store))
-        let glass = NSGlassEffectView()
-        glass.cornerRadius = 24
-        glass.contentView = hosting
-        panel = ShelfPanel(contentView: glass, size: hosting.fittingSize)
+        panel = ShelfPanel(contentView: Self.glassSurface(hosting), size: hosting.fittingSize)
         searchHosting = NSHostingView(rootView: AllShotsView(store: store))
-        let searchGlass = NSGlassEffectView()
-        searchGlass.cornerRadius = 24
-        searchGlass.contentView = searchHosting
-        searchPanel = ShelfPanel(contentView: searchGlass, size: searchHosting.fittingSize)
+        searchPanel = ShelfPanel(contentView: Self.glassSurface(searchHosting), size: searchHosting.fittingSize)
         barCapsule.cornerRadius = Self.barHeight / 2
         barCapsule.contentView = NSHostingView(rootView: CaptureBarView(store: store))
         barCircle.cornerRadius = Self.barHeight / 2
@@ -132,6 +126,24 @@ final class StatusController: NSObject {
     private func updateButton(frame: ShelfIcon.Frame, count: Int) {
         item.button?.image = ShelfIcon.image(frame: frame)
         item.button?.title = count > 0 ? "\(count)" : ""
+    }
+
+    /// A panel's rounded glass, inside a glass container like the capture bar's pieces. Glass renders
+    /// its edge differently in and out of a container, so every surface goes through one.
+    private static func glassSurface(_ content: NSView) -> NSView {
+        let glass = NSGlassEffectView()
+        glass.cornerRadius = 24
+        glass.contentView = content
+        glass.autoresizingMask = [.width, .height]
+        let container = NSGlassEffectContainerView()
+        container.contentView = glass
+        return container
+    }
+
+    /// For `--selftest`: whether the shelf's glass fills its window.
+    var panelSummary: String {
+        let glass = (panel.contentView as? NSGlassEffectContainerView)?.contentView?.frame ?? .zero
+        return "window \(Int(panel.frame.width))×\(Int(panel.frame.height)), glass \(Int(glass.width))×\(Int(glass.height)), content \(Int(hosting.frame.width))×\(Int(hosting.frame.height))"
     }
 
     /// For `--selftest`: the capture bar window and the + glass, to check the editor morph.
