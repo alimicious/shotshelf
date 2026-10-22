@@ -1,3 +1,4 @@
+import CryptoKit
 import Quartz
 import SwiftUI
 
@@ -12,6 +13,8 @@ enum Prefs {
     static let openShortcut = "openShortcut"  // JSON Shortcut, or null when cleared
     static let searchShortcut = "searchShortcut"
     static let panelSize = "panelSize"        // PanelSize raw value
+    static let autoUpdates = "autoUpdates"    // Bool, check GitHub for a newer version once a day
+    static let lastUpdateCheck = "lastUpdateCheck"  // Double, when that last happened
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
     static let mascot = "mascot"              // Bool, mascot snaps a photo for new shots
 }
@@ -55,6 +58,60 @@ struct ShotShelfApp: App {
             exit(0)
         }
         if args.contains("--selftest") { Self.selfTest() }
+
+        // Release flags (see release.sh): `--generate-update-key` prints a new private key then its
+        // public key, `--sign-update <zip>` signs with the private key read from stdin,
+        // `--verify-update <zip> <sig>` checks a signature, and `--test-update <feed.json or URL> <dir>
+        // [--pretend-version x]` runs a whole update from a local feed into <dir>/ShotShelf.app.
+        if args.contains("--generate-update-key") {
+            let key = Curve25519.Signing.PrivateKey()
+            print(key.rawRepresentation.base64EncodedString())
+            print(key.publicKey.rawRepresentation.base64EncodedString())
+            exit(0)
+        }
+        if let i = args.firstIndex(of: "--sign-update"), i + 1 < args.count {
+            let privateKey = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+            guard let zip = try? Data(contentsOf: URL(fileURLWithPath: args[i + 1])),
+                  let signature = try? Updater.sign(zip, privateKey: privateKey) else { print("Couldn't sign"); exit(1) }
+            print(signature)
+            exit(0)
+        }
+        if let i = args.firstIndex(of: "--verify-update"), i + 2 < args.count {
+            let zip = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 1]))) ?? Data()
+            let signature = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 2]))) ?? Data()
+            let valid = Updater.verify(zip, signature: signature)
+            print(valid ? "signature ok" : "signature INVALID")
+            exit(valid ? 0 : 1)
+        }
+        if let i = args.firstIndex(of: "--test-update"), i + 2 < args.count {
+            let pretend = args.firstIndex(of: "--pretend-version").flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
+            let feed = args[i + 1].hasPrefix("https://") ? URL(string: args[i + 1])! : URL(fileURLWithPath: args[i + 1])
+            Self.testUpdate(feed: feed, into: URL(fileURLWithPath: args[i + 2]),
+                            current: pretend ?? Updater.currentVersion)
+        }
+    }
+
+    private static func testUpdate(feed: URL, into dir: URL, current: String) {
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            do {
+                guard let update = try await Updater.check(feed: feed, current: current) else {
+                    print("no signed update newer than \(current)")
+                    exit(0)
+                }
+                print("found \(update.version)")
+                let target = dir.appendingPathComponent("ShotShelf.app")
+                let app = try await Updater.prepare(update, nextTo: target)
+                print("downloaded and verified")
+                try Updater.install(app, replacing: target)
+                print("installed into \(dir.lastPathComponent)")
+            } catch {
+                print("update failed: \(error.localizedDescription)")
+            }
+            done.signal()
+        }
+        done.wait()
+        exit(0)
     }
 
     @MainActor private static func renderPanel(to path: String) {

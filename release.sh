@@ -16,14 +16,23 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     echo "Release $TAG already exists; bump VERSION first." >&2
     exit 1
 fi
+# Installed copies only accept updates signed with this key, which lives in this Mac's Keychain.
+KEY_NAME="ShotShelf update signing key"
+if ! security find-generic-password -s "$KEY_NAME" >/dev/null 2>&1; then
+    echo "No \"$KEY_NAME\" in your Keychain, so the update can't be signed." >&2
+    exit 1
+fi
 
 ./build.sh --universal
 rm -f "$ZIP"
 # Leave out macOS file metadata (extended attributes) so the zip carries nothing about this Mac.
 ditto -c -k --norsrc --noextattr --keepParent build/ShotShelf.app "$ZIP"
+# The key goes in through stdin, so it never shows up in a command line or the process list.
+security find-generic-password -s "$KEY_NAME" -w | build/ShotShelf.app/Contents/MacOS/ShotShelf --sign-update "$ZIP" > "$ZIP.sig"
+build/ShotShelf.app/Contents/MacOS/ShotShelf --verify-update "$ZIP" "$ZIP.sig"
 
 git push
-gh release create "$TAG" "$ZIP" --target "$(git rev-parse HEAD)" --title "ShotShelf $VERSION" --notes-file - <<NOTES
+gh release create "$TAG" "$ZIP" "$ZIP.sig" --target "$(git rev-parse HEAD)" --title "ShotShelf $VERSION" --notes-file - <<NOTES
 A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up big with the six before it underneath: drag one into any app to share it, onto another shot to rearrange, or onto a folder chip to file it away.
 
 - **Copy the image or the text in it** (read on your Mac with Apple's Vision), Quick Look, pin, redact private bits, or send to the Trash.
@@ -43,7 +52,7 @@ A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up bi
 
 Then click the polaroid in your menu bar, or press ⌥⌘S.
 
-Requires macOS 26 or later. Runs on Apple Silicon and Intel Macs. Everything stays on your Mac: ShotShelf only reads your screenshot folder and never connects to the internet. Anything it removes goes to the Trash, so it can always be put back.
+Requires macOS 26 or later. Runs on Apple Silicon and Intel Macs. Everything stays on your Mac: ShotShelf only reads your screenshot folder, and its one network request is a daily check of GitHub for a newer version (you can turn it off in settings). Updates install from inside the app and are signed, so only genuine releases are accepted. Anything ShotShelf removes goes to the Trash, so it can always be put back.
 
 *Unofficial fan project, not affiliated with or endorsed by Anthropic.*
 NOTES

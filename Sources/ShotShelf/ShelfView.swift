@@ -8,6 +8,7 @@ struct ShelfView: View {
     @AppStorage(Prefs.autoTidyDays) private var autoTidyDays = 0
     @AppStorage(Prefs.smartNames) private var smartNames = true
     @AppStorage(Prefs.mascot) private var mascot = true
+    @AppStorage(Prefs.autoUpdates) private var autoUpdates = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -38,6 +39,13 @@ struct ShelfView: View {
             Spacer()
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 6) {
+                    if let update = store.availableUpdate {
+                        GlassIconButton(systemName: "arrow.down.circle.fill", help: "ShotShelf \(update.version) is available",
+                                        tint: terracotta) {
+                            store.showUpdate.toggle()
+                        }
+                        .popover(isPresented: $store.showUpdate, arrowEdge: .bottom) { UpdateView(update: update, store: store) }
+                    }
                     GlassIconButton(systemName: "square.grid.2x2", help: "Show all and search (⌘F)") {
                         store.showAll.toggle()
                     }
@@ -169,6 +177,16 @@ struct ShelfView: View {
 
     // MARK: - Settings
 
+    private var updateStatusText: String {
+        if let update = store.availableUpdate { return "Version \(update.version) is available." }
+        switch store.updateStatus {
+        case .checking: return "Checking…"
+        case .upToDate: return "You're up to date (\(Updater.currentVersion))."
+        case .failed(let message): return message
+        default: return "Version \(Updater.currentVersion)"
+        }
+    }
+
     private var settings: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Settings").font(.headline)
@@ -191,6 +209,22 @@ struct ShelfView: View {
             Toggle("Name new shots from their text", isOn: $smartNames)
             Toggle("Mascot snaps new shots", isOn: $mascot)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
+            Divider()
+            Toggle("Check for updates automatically", isOn: $autoUpdates)
+            HStack {
+                Text(updateStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Spacer()
+                if store.availableUpdate != nil {
+                    Button("Update…") { store.showSettings = false; store.showUpdate = true }
+                        .buttonStyle(.glassProminent).tint(terracotta).controlSize(.small)
+                } else {
+                    Button("Check Now") { Task { await store.checkForUpdates(userInitiated: true) } }
+                        .buttonStyle(.glass).controlSize(.small)
+                        .disabled(store.updateStatus == .checking)
+                }
+            }
+            Text("Checks GitHub once a day. Nothing about you or your screenshots is sent.")
+                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Divider()
             HStack {
                 Text(store.folder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
@@ -398,6 +432,52 @@ private struct FolderDrop: DropDelegate {
     }
 }
 
+/// The update popover: what's new, then install and relaunch in one click.
+private struct UpdateView: View {
+    let update: AvailableUpdate
+    @ObservedObject var store: ShelfStore
+
+    private var busy: Bool { store.updateStatus == .downloading || store.updateStatus == .installing }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
+                    .frame(width: 34, height: 34)
+                    .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("ShotShelf \(update.version)").font(.headline)
+                    Text("You have \(Updater.currentVersion)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Link("See what's new", destination: update.pageURL).font(.callout)
+            switch store.updateStatus {
+            case .downloading:
+                ProgressView("Downloading and checking…").controlSize(.small)
+            case .installing:
+                ProgressView("Installing…").controlSize(.small)
+            case .failed(let message):
+                Text(message).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            default:
+                Text("Your pins, shelf and settings carry over. macOS may ask for access to your screenshots again.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                if case .failed = store.updateStatus {
+                    Button("Download from GitHub") { NSWorkspace.shared.open(update.pageURL) }.buttonStyle(.glass)
+                } else {
+                    Button("Later") { store.showUpdate = false }.buttonStyle(.glass).disabled(busy)
+                }
+                Button("Install and Relaunch") { store.installUpdate() }
+                    .buttonStyle(.glassProminent).tint(terracotta).disabled(busy)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+}
+
 /// A global shortcut in Settings: click to record a new one, ⓧ to remove it.
 private struct ShortcutRow: View {
     let title: String
@@ -445,11 +525,13 @@ private struct CellButton: View {
 private struct GlassIconButton: View {
     let systemName: String
     let help: String
+    var tint: Color? = nil
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName).font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
+                .foregroundStyle(tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.primary))
         }
         .buttonStyle(.glass)
         .buttonBorderShape(.circle)

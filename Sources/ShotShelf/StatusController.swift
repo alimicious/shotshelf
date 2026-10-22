@@ -90,6 +90,7 @@ final class StatusController: NSObject {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         store.showSettings = false
+        store.showUpdate = false
         store.cancelRecording()
         store.showAll = false
         store.hovered = nil

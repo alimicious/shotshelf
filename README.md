@@ -12,7 +12,9 @@ A Liquid Glass menu bar shelf for your recent screenshots. Click the polaroid (o
 - **Tidy** moves unpinned shots from before today to the Trash; auto-tidy can do it on a schedule.
 - The pixel mascot pops up and snaps a photo whenever you take a screenshot.
 
-It reads the folder macOS saves screenshots to (the Desktop unless you changed it), top level only, and goes by the tag macOS puts on every screenshot, so other images are never touched. Nothing is deleted outright; it all goes to the Trash. Everything stays on your Mac: ShotShelf never connects to the internet.
+It reads the folder macOS saves screenshots to (the Desktop unless you changed it), top level only, and goes by the tag macOS puts on every screenshot, so other images are never touched. Nothing is deleted outright; it all goes to the Trash. Everything stays on your Mac: the only network request is a daily check of GitHub for a newer version, which you can turn off in Settings.
+
+**Updates** install from inside the app: when a new version is out, an update button appears in the panel's header, and one click downloads it, checks it, and relaunches into it. Each release zip is signed, and the app only installs zips that match the public key built into it.
 
 ## Install
 
@@ -33,8 +35,10 @@ Requires the Swift toolchain (the Xcode Command Line Tools are enough).
 ./build.sh                       # builds build/ShotShelf.app for this Mac
 ./build.sh --install             # also copies it to /Applications and launches it
 ./build.sh --universal           # builds for both Apple Silicon and Intel
-./release.sh                     # builds a universal zip and publishes a GitHub release for ./VERSION
+./release.sh                     # builds a universal zip, signs it, and publishes a GitHub release for ./VERSION
 ```
+
+`release.sh` signs each zip with a private key stored in the maintainer's Keychain as "ShotShelf update signing key" and uploads the signature next to the zip. The matching public key is in `Updater.swift`. Keep a backup of the private key (Keychain Access → that item → Show password, into a password manager): without it, installed copies can't verify future updates.
 
 Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png [--size small|medium|large]` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened. The app icon is drawn in code too: `build.sh` runs `ShotShelf --iconset` and packs the result with `iconutil`.
 

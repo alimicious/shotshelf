@@ -2,6 +2,11 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum UpdateStatus: Equatable {
+    case idle, checking, upToDate, downloading, installing
+    case failed(String)
+}
+
 /// The two global shortcuts you can set.
 enum ShortcutSlot {
     case open, search
@@ -55,6 +60,10 @@ final class ShelfStore: ObservableObject {
     @Published private(set) var searchShortcut: Shortcut?
     /// Which shortcut is waiting for you to press keys, if any.
     @Published private(set) var recording: ShortcutSlot?
+    /// A newer signed release on GitHub, once a check has found one.
+    @Published private(set) var availableUpdate: AvailableUpdate?
+    @Published private(set) var updateStatus: UpdateStatus = .idle
+    @Published var showUpdate = false
     @Published var showAll = false
     @Published var query = ""
 
@@ -98,6 +107,7 @@ final class ShelfStore: ObservableObject {
         defaults.register(defaults: [
             Prefs.smartNames: true,
             Prefs.mascot: true,
+            Prefs.autoUpdates: true,
         ])
         panelSize = Self.loadPanelSize()
         openShortcut = Self.loadShortcut(Prefs.openShortcut, fallback: Shortcut.legacy(defaults.string(forKey: Prefs.hotKey)) ?? .openDefault)
@@ -128,6 +138,7 @@ final class ShelfStore: ObservableObject {
             while !Task.isCancelled {
                 await refresh()
                 autoTidy()
+                await checkForUpdatesIfDue()
                 // The watcher catches new shots instantly; this just picks up auto-tidy and missed events.
                 try? await Task.sleep(for: .seconds(600))
             }
@@ -639,6 +650,46 @@ final class ShelfStore: ObservableObject {
 
     private func shortcutHotKey(_ slot: ShortcutSlot) -> HotKey? {
         slot == .open ? openHotKey : searchHotKey
+    }
+
+    // MARK: - Updates
+
+    /// At most once a day, and only if automatic checks are on.
+    private func checkForUpdatesIfDue() async {
+        let defaults = UserDefaults.standard
+        let last = Date(timeIntervalSince1970: defaults.double(forKey: Prefs.lastUpdateCheck))
+        guard defaults.bool(forKey: Prefs.autoUpdates), Date().timeIntervalSince(last) > 86400 else { return }
+        await checkForUpdates()
+    }
+
+    func checkForUpdates(userInitiated: Bool = false) async {
+        guard updateStatus != .checking, updateStatus != .downloading, updateStatus != .installing else { return }
+        updateStatus = .checking
+        do {
+            availableUpdate = try await Updater.check()
+            updateStatus = availableUpdate == nil ? .upToDate : .idle
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Prefs.lastUpdateCheck)
+        } catch {
+            // A failed background check stays quiet; it'll try again tomorrow.
+            updateStatus = userInitiated ? .failed("Couldn't reach GitHub. Check your connection and try again.") : .idle
+        }
+    }
+
+    /// Downloads, verifies and installs the update, then relaunches into it.
+    func installUpdate() {
+        guard let update = availableUpdate, updateStatus != .downloading, updateStatus != .installing else { return }
+        Task {
+            updateStatus = .downloading
+            do {
+                let appURL = Bundle.main.bundleURL
+                let newApp = try await Updater.prepare(update, nextTo: appURL)
+                updateStatus = .installing
+                try await Task.detached { try Updater.install(newApp, replacing: appURL) }.value
+                Updater.relaunch(appURL)
+            } catch {
+                updateStatus = .failed(error.localizedDescription)
+            }
+        }
     }
 
     func setLaunchAtLogin(_ on: Bool) {
