@@ -6,7 +6,9 @@ A Liquid Glass menu bar shelf for your recent screenshots. Click the polaroid (o
 - **Keyboard**: arrows move, Space previews, ⌘C copies, T copies text, P pins, R redacts, ⌫ trashes, ⌘F searches, Esc closes.
 - **Redact** opens an editor where you drag boxes over private bits; it saves a pixelated copy next to the original.
 - **Smart names**: new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". Turn it off in Settings.
-- **Show all** (grid button or ⌘F) lists every screenshot and searches the text inside them.
+- **Show all** (grid button or ⌘F) opens beside the panel, lists every screenshot and searches the text inside them. Click a shot's eye to see it bigger, or drag it onto one of the panel's tiles to put it on the shelf.
+- **Shortcuts**: record your own in Settings for opening the shelf (⌥⌘S by default) and for jumping straight to search.
+- **Sizes**: Small, Medium or Large in Settings. Bigger panels get bigger tiles and more of them (4, 7 or 13 shots).
 - **Tidy** moves unpinned shots from before today to the Trash; auto-tidy can do it on a schedule.
 - The pixel mascot pops up and snaps a photo whenever you take a screenshot.
 
@@ -34,6 +36,6 @@ Requires the Swift toolchain (the Xcode Command Line Tools are enough).
 ./release.sh                     # builds a universal zip and publishes a GitHub release for ./VERSION
 ```
 
-Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened. The app icon is drawn in code too: `build.sh` runs `ShotShelf --iconset` and packs the result with `iconutil`.
+Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png [--size small|medium|large]` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened. The app icon is drawn in code too: `build.sh` runs `ShotShelf --iconset` and packs the result with `iconutil`.
 
 *Unofficial fan project, not affiliated with or endorsed by Anthropic.*

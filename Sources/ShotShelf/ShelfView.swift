@@ -1,14 +1,11 @@
 import SwiftUI
 
 private let terracotta = Color(nsColor: ShelfIcon.terracotta)
-private let cellSize = CGSize(width: 104, height: 70)
-private let heroSize = CGSize(width: 328, height: 184)
 private let hoverSpring = Animation.spring(duration: 0.28, bounce: 0.25)
 
 struct ShelfView: View {
     @ObservedObject var store: ShelfStore
     @AppStorage(Prefs.autoTidyDays) private var autoTidyDays = 0
-    @AppStorage(Prefs.hotKey) private var hotKey: HotKeyPreset = .optionCommandS
     @AppStorage(Prefs.smartNames) private var smartNames = true
     @AppStorage(Prefs.mascot) private var mascot = true
 
@@ -20,7 +17,11 @@ struct ShelfView: View {
             footer
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: store.panelSize.width)
+        // Show All opens beside the panel rather than over it, so its shots can be dragged onto the tiles.
+        .popover(isPresented: $store.showAll, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
+            AllShotsView(store: store)
+        }
     }
 
     // MARK: - Header
@@ -40,7 +41,6 @@ struct ShelfView: View {
                     GlassIconButton(systemName: "square.grid.2x2", help: "Show all and search (⌘F)") {
                         store.showAll.toggle()
                     }
-                    .popover(isPresented: $store.showAll, arrowEdge: .bottom) { AllShotsView(store: store) }
                     GlassIconButton(systemName: "folder", help: "Open \(store.folder.lastPathComponent) in Finder") {
                         NSWorkspace.shared.open(store.folder)
                     }
@@ -61,14 +61,17 @@ struct ShelfView: View {
 
     // MARK: - Grid
 
-    /// The first shot gets the big slot; the rest fill two rows of three below it.
+    /// The first shot gets the big slot; the rest fill rows of tiles below it (more of them in bigger panels).
     private var grid: some View {
         let shots = Array(store.visible)
+        let size = store.panelSize
         return VStack(spacing: 8) {
-            slot(shots, 0, size: heroSize)
-            ForEach(0..<2, id: \.self) { row in
+            slot(shots, 0, size: size.hero)
+            ForEach(0..<size.rows, id: \.self) { row in
                 HStack(spacing: 8) {
-                    ForEach(0..<3, id: \.self) { col in slot(shots, 1 + row * 3 + col, size: cellSize) }
+                    ForEach(0..<size.columns, id: \.self) { col in
+                        slot(shots, 1 + row * size.columns + col, size: size.tile)
+                    }
                 }
             }
         }
@@ -149,7 +152,8 @@ struct ShelfView: View {
                 Button("Trash") { store.tidy() }
                     .buttonStyle(.glassProminent).tint(terracotta).controlSize(.small)
             } else {
-                Text("Drag to share or rearrange · Space to preview").font(.caption2).foregroundStyle(.secondary)
+                Text(store.panelSize == .small ? "Space to preview" : "Drag to share or rearrange · Space to preview")
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 Button { store.confirmingTidy = true } label: {
                     Label(count > 0 ? "Tidy \(count)" : "Tidy", systemImage: "sparkles")
@@ -176,10 +180,14 @@ struct ShelfView: View {
             }
             Text("Moves unpinned screenshots to the Trash once they're this old.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Picker("Open shelf", selection: $hotKey) {
-                ForEach(HotKeyPreset.allCases) { Text($0.rawValue).tag($0) }
+            Picker("Size", selection: $store.panelSize) {
+                ForEach(PanelSize.allCases) { Text($0.rawValue).tag($0) }
             }
-            .onChange(of: hotKey) { store.applyHotKey() }
+            .pickerStyle(.segmented)
+            ShortcutRow(title: "Open shelf", slot: .open, store: store)
+            ShortcutRow(title: "Search screenshots", slot: .search, store: store)
+            Text(store.recording == nil ? "Shortcuts work from any app." : "Press the new shortcut. Esc cancels, Delete removes it.")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("Name new shots from their text", isOn: $smartNames)
             Toggle("Mascot snaps new shots", isOn: $mascot)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
@@ -387,6 +395,35 @@ private struct FolderDrop: DropDelegate {
         guard let url = store.dragging, let shot = store.shots.first(where: { $0.url == url }) else { return false }
         store.file(shot, into: folder)
         return true
+    }
+}
+
+/// A global shortcut in Settings: click to record a new one, ⓧ to remove it.
+private struct ShortcutRow: View {
+    let title: String
+    let slot: ShortcutSlot
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        let shortcut = store.shortcut(for: slot)
+        let isRecording = store.recording == slot
+        HStack(spacing: 6) {
+            Text(title)
+            Spacer()
+            Button {
+                isRecording ? store.cancelRecording() : store.startRecording(slot)
+            } label: {
+                Text(isRecording ? "Press keys…" : shortcut?.display ?? "Record Shortcut")
+                    .frame(minWidth: 64)
+            }
+            .buttonStyle(.glass).controlSize(.small)
+            .tint(isRecording ? terracotta : nil)
+            if shortcut != nil, !isRecording {
+                Button { store.setShortcut(nil, for: slot) } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help("Remove this shortcut")
+            }
+        }
     }
 }
 

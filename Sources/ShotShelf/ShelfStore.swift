@@ -2,6 +2,11 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The two global shortcuts you can set.
+enum ShortcutSlot {
+    case open, search
+}
+
 struct Toast: Equatable {
     let text: String
     let symbol: String
@@ -10,9 +15,6 @@ struct Toast: Equatable {
 
 @MainActor
 final class ShelfStore: ObservableObject {
-    /// One big slot plus two rows of three. Always drawn in full so the panel never changes height.
-    static let gridSize = 7
-
     /// In display order: the first one gets the big slot.
     @Published private(set) var shots: [Shot] = []
     @Published private(set) var thumbnails: [URL: NSImage] = [:]
@@ -39,7 +41,20 @@ final class ShelfStore: ObservableObject {
     @Published var dropTarget: URL?
     @Published var dropFolder: URL?
     @Published var confirmingTidy = false
-    @Published var showSettings = false
+    @Published var showSettings = false {
+        didSet { if !showSettings { cancelRecording() } }
+    }
+    /// Small, medium or large: bigger panels show bigger tiles and more of them.
+    @Published var panelSize: PanelSize {
+        didSet {
+            UserDefaults.standard.set(panelSize.rawValue, forKey: Prefs.panelSize)
+            Task { await loadThumbnails() }
+        }
+    }
+    @Published private(set) var openShortcut: Shortcut?
+    @Published private(set) var searchShortcut: Shortcut?
+    /// Which shortcut is waiting for you to press keys, if any.
+    @Published private(set) var recording: ShortcutSlot?
     @Published var showAll = false
     @Published var query = ""
 
@@ -54,7 +69,8 @@ final class ShelfStore: ObservableObject {
     var closePanel: (() -> Void)?
 
     private var watcher: FolderWatcher?
-    private var hotKey: HotKey?
+    private var openHotKey: HotKey?
+    private var searchHotKey: HotKey?
     private var redactWindow: NSWindow?
     private var knownPaths: Set<String>?
     /// Paths already treated as new arrivals, including the names they were renamed to.
@@ -67,12 +83,13 @@ final class ShelfStore: ObservableObject {
     /// A static store for rendering the panel without a menu bar (see `--render`).
     init(preview shots: [Shot]) {
         isPreview = true
+        panelSize = Self.loadPanelSize()
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
         self.shots = Self.arranged(shots)
         freshSince = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: Prefs.lastSeen))
-        for shot in self.shots.prefix(Self.gridSize) { thumbnails[shot.url] = ShotScanner.thumbnail(shot.url) }
+        for shot in self.shots.prefix(panelSize.slots) { thumbnails[shot.url] = ShotScanner.thumbnail(shot.url) }
     }
 
     init() {
@@ -81,8 +98,10 @@ final class ShelfStore: ObservableObject {
         defaults.register(defaults: [
             Prefs.smartNames: true,
             Prefs.mascot: true,
-            Prefs.hotKey: HotKeyPreset.optionCommandS.rawValue,
         ])
+        panelSize = Self.loadPanelSize()
+        openShortcut = Self.loadShortcut(Prefs.openShortcut, fallback: Shortcut.legacy(defaults.string(forKey: Prefs.hotKey)) ?? .openDefault)
+        searchShortcut = Self.loadShortcut(Prefs.searchShortcut, fallback: nil)
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
@@ -91,11 +110,16 @@ final class ShelfStore: ObservableObject {
         watcher = FolderWatcher(folder) { [weak self] in
             MainActor.assumeIsolated { self?.folderChanged() }
         }
-        applyHotKey()
+        applyHotKeys()
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let consumed = MainActor.assumeIsolated {
+                guard let self else { return false }
+                if let slot = self.recording {
+                    self.record(event, for: slot)
+                    return true
+                }
                 // Leave typing in text fields (like search) alone.
-                guard let self, event.window === self.panelWindow, !(event.window?.firstResponder is NSText) else { return false }
+                guard event.window === self.panelWindow, !(event.window?.firstResponder is NSText) else { return false }
                 return self.handleKey(event)
             }
             return consumed ? nil : event
@@ -110,7 +134,7 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    var visible: ArraySlice<Shot> { shots.prefix(Self.gridSize) }
+    var visible: ArraySlice<Shot> { shots.prefix(panelSize.slots) }
     var todayCount: Int { shots.filter { Calendar.current.isDateInToday($0.date) }.count }
 
     /// Shots whose name or text matches the search, in shelf order.
@@ -298,8 +322,10 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    func quickLook(_ shot: Shot) {
-        AppDelegate.toggleQuickLook(shots.map(\.url), at: shots.firstIndex(of: shot) ?? 0)
+    /// Previews `shot`; the arrow keys in Quick Look then step through `list` (the whole shelf by default).
+    func quickLook(_ shot: Shot, among list: [Shot]? = nil) {
+        let list = list ?? shots
+        AppDelegate.toggleQuickLook(list.map(\.url), at: list.firstIndex(of: shot) ?? 0)
     }
 
     func reveal(_ shot: Shot) {
@@ -496,7 +522,7 @@ final class ShelfStore: ObservableObject {
         }
         guard !shots.isEmpty else { return false }
         let index = hovered.flatMap { url in shots.firstIndex { $0.url == url } }
-        if let next = Self.neighbour(of: index, keyCode: event.keyCode, count: shots.count) {
+        if let next = Self.neighbour(of: index, keyCode: event.keyCode, count: shots.count, columns: panelSize.columns) {
             hovered = shots[next].url
             return true
         }
@@ -519,28 +545,100 @@ final class ShelfStore: ObservableObject {
         return true
     }
 
-    /// Arrow-key moves around the shelf: the big slot on top, then two rows of three.
-    private static func neighbour(of index: Int?, keyCode: UInt16, count: Int) -> Int? {
+    /// Arrow-key moves around the shelf: the big slot on top, then rows of `columns` tiles.
+    private static func neighbour(of index: Int?, keyCode: UInt16, count: Int, columns: Int) -> Int? {
         guard [123, 124, 125, 126].contains(keyCode) else { return nil }
         guard let i = index else { return 0 }
         let target: Int
         switch keyCode {
-        case 123: target = i - 1                     // left
-        case 124: target = i + 1                     // right
-        case 125: target = i == 0 ? 1 : i + 3        // down
-        default: target = i <= 3 ? 0 : i - 3         // up
+        case 123: target = i - 1                                  // left
+        case 124: target = i + 1                                  // right
+        case 125: target = i == 0 ? 1 : i + columns               // down
+        default: target = i <= columns ? 0 : i - columns          // up
         }
         return (0..<count).contains(target) ? target : i
     }
 
     // MARK: - Settings
 
-    var hotKeyRegistered: Bool { hotKey != nil }
+    var hotKeyRegistered: Bool { openHotKey != nil }
 
-    func applyHotKey() {
-        hotKey = nil
-        let preset = HotKeyPreset(rawValue: UserDefaults.standard.string(forKey: Prefs.hotKey) ?? "") ?? .optionCommandS
-        hotKey = HotKey(preset) { [weak self] in MainActor.assumeIsolated { self?.togglePanel?() } }
+    func shortcut(for slot: ShortcutSlot) -> Shortcut? {
+        slot == .open ? openShortcut : searchShortcut
+    }
+
+    private func applyHotKeys() {
+        openHotKey = nil
+        searchHotKey = nil
+        openHotKey = openShortcut.flatMap { HotKey($0) { [weak self] in MainActor.assumeIsolated { self?.togglePanel?() } } }
+        searchHotKey = searchShortcut.flatMap { HotKey($0) { [weak self] in MainActor.assumeIsolated { self?.openSearch() } } }
+    }
+
+    /// Opens the shelf straight into Show All with the search field ready; pressing it again closes.
+    func openSearch() {
+        if panelWindow?.isVisible == true, showAll {
+            closePanel?()
+            return
+        }
+        if panelWindow?.isVisible != true { togglePanel?() }
+        // The popover needs the panel on screen to attach to.
+        Task {
+            try? await Task.sleep(for: .milliseconds(60))
+            showAll = true
+        }
+    }
+
+    func startRecording(_ slot: ShortcutSlot) {
+        recording = slot
+        // Let the current shortcuts through as ordinary key presses so they can be re-recorded.
+        openHotKey = nil
+        searchHotKey = nil
+    }
+
+    func cancelRecording() {
+        guard recording != nil else { return }
+        recording = nil
+        applyHotKeys()
+    }
+
+    /// Esc cancels, Delete clears, and anything with ⌘, ⌥ or ⌃ becomes the new shortcut.
+    private func record(_ event: NSEvent, for slot: ShortcutSlot) {
+        switch Int(event.keyCode) {
+        case 53:
+            cancelRecording()
+        case 51, 117:
+            recording = nil
+            setShortcut(nil, for: slot)
+        default:
+            guard let shortcut = Shortcut(event: event) else {
+                NSSound.beep()  // needs ⌘, ⌥ or ⌃; keep listening
+                return
+            }
+            recording = nil
+            let other: ShortcutSlot = slot == .open ? .search : .open
+            if self.shortcut(for: other) == shortcut {
+                showToast("\(shortcut.display) is already in use", symbol: "exclamationmark.triangle")
+                applyHotKeys()
+                return
+            }
+            setShortcut(shortcut, for: slot)
+        }
+    }
+
+    func setShortcut(_ shortcut: Shortcut?, for slot: ShortcutSlot) {
+        switch slot {
+        case .open: openShortcut = shortcut
+        case .search: searchShortcut = shortcut
+        }
+        UserDefaults.standard.set(try? JSONEncoder().encode(shortcut), forKey: slot == .open ? Prefs.openShortcut : Prefs.searchShortcut)
+        applyHotKeys()
+        if let shortcut, shortcutHotKey(slot) == nil {
+            showToast("\(shortcut.display) is taken by another app", symbol: "exclamationmark.triangle")
+        }
+    }
+
+    private func shortcutHotKey(_ slot: ShortcutSlot) -> HotKey? {
+        slot == .open ? openHotKey : searchHotKey
     }
 
     func setLaunchAtLogin(_ on: Bool) {
@@ -558,6 +656,16 @@ final class ShelfStore: ObservableObject {
     }
 
     // MARK: - Persistence
+
+    private static func loadPanelSize() -> PanelSize {
+        PanelSize(rawValue: UserDefaults.standard.string(forKey: Prefs.panelSize) ?? "") ?? .medium
+    }
+
+    /// A saved shortcut; saved as JSON `null` once you've cleared it, so it doesn't fall back to the default.
+    private static func loadShortcut(_ key: String, fallback: Shortcut?) -> Shortcut? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return fallback }
+        return try? JSONDecoder().decode(Shortcut.self, from: data)
+    }
 
     private static func loadPinned() -> Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: Prefs.pinned) ?? [])

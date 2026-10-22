@@ -8,7 +8,10 @@ enum Prefs {
     static let autoTidyDays = "autoTidyDays"  // Int, 0 = off
     static let order = "order"                // [String] file paths, as you last arranged them
     static let folders = "folders"            // [String] folder paths shown as chips
-    static let hotKey = "hotKey"              // HotKeyPreset raw value
+    static let hotKey = "hotKey"              // String, the old fixed shortcut choice (migrated to openShortcut)
+    static let openShortcut = "openShortcut"  // JSON Shortcut, or null when cleared
+    static let searchShortcut = "searchShortcut"
+    static let panelSize = "panelSize"        // PanelSize raw value
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
     static let mascot = "mascot"              // Bool, mascot snaps a photo for new shots
 }
@@ -18,7 +21,7 @@ struct ShotShelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Debug flags: `--dump` lists the screenshots found, `--render <file.png>` saves the panel,
+        // Debug flags: `--dump` lists the screenshots found, `--render <file.png> [--size small|medium|large]` saves the panel,
         // `--selftest` opens the panel and Quick Look on screen and reports what happened.
         // Build flag: `--iconset <dir>` writes the app icon PNGs (see build.sh).
         let args = CommandLine.arguments
@@ -57,6 +60,10 @@ struct ShotShelfApp: App {
     @MainActor private static func renderPanel(to path: String) {
         let store = ShelfStore(preview: ShotScanner.scan(ShotScanner.folder) ?? [])
         store.hovered = store.shots.first?.url  // show the hover actions on one cell
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--size"), i + 1 < args.count, let size = PanelSize(rawValue: args[i + 1].capitalized) {
+            store.panelSize = size
+        }
         let renderer = ImageRenderer(content: ShelfView(store: store)
             .background(Color(nsColor: .windowBackgroundColor)))
         renderer.scale = 2
@@ -89,20 +96,31 @@ struct ShotShelfApp: App {
 
     private static func selfTest() {
         func visibleWindows() -> String {
-            NSApp.windows.filter(\.isVisible).map { "\($0.className) \(Int($0.frame.width))×\(Int($0.frame.height))" }
+            NSApp.windows.filter(\.isVisible)
+                .map { "\($0.className) x=\(Int($0.frame.minX))…\(Int($0.frame.maxX)) \(Int($0.frame.width))×\(Int($0.frame.height))" }
                 .joined(separator: ", ")
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            AppDelegate.shared?.statusController?.toggle()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+        func after(_ seconds: Double, _ step: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: step)
+        }
+        let controller = { AppDelegate.shared?.statusController }
+        after(2) {
+            controller()?.toggle()
+            after(1.5) {
                 print("after toggle: \(visibleWindows())")
-                print("hotkey registered: \(AppDelegate.shared?.statusController?.store.hotKeyRegistered ?? false)")
-                let urls = (ShotScanner.scan(ShotScanner.folder) ?? []).map(\.url)
-                AppDelegate.toggleQuickLook(urls, at: 0)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    let panel = QLPreviewPanel.shared()
-                    print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
-                    exit(0)
+                print("open shortcut registered: \(controller()?.store.hotKeyRegistered ?? false)")
+                controller()?.close()
+                controller()?.store.openSearch()
+                after(1.5) {
+                    print("after search shortcut: \(visibleWindows())")
+                    controller()?.close()
+                    let urls = (ShotScanner.scan(ShotScanner.folder) ?? []).map(\.url)
+                    AppDelegate.toggleQuickLook(urls, at: 0)
+                    after(1.5) {
+                        let panel = QLPreviewPanel.shared()
+                        print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
+                        exit(0)
+                    }
                 }
             }
         }

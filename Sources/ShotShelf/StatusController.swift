@@ -36,6 +36,18 @@ final class StatusController: NSObject {
                 MainActor.assumeIsolated { self?.updateButton(frame: frame, count: count) }
             }
             .store(in: &subscriptions)
+
+        // Switching size in Settings resizes the open panel, once SwiftUI has laid out the new grid.
+        store.$panelSize.dropFirst()
+            .sink { [weak self] _ in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    MainActor.assumeIsolated {
+                        guard let self, self.panel.isVisible else { return }
+                        self.place()
+                    }
+                }
+            }
+            .store(in: &subscriptions)
     }
 
     private func updateButton(frame: ShelfIcon.Frame, count: Int) {
@@ -48,21 +60,27 @@ final class StatusController: NSObject {
     }
 
     private func show() {
-        guard let button = item.button, let buttonWindow = button.window,
-              let screen = buttonWindow.screen ?? NSScreen.main else { return }
+        guard let button = item.button else { return }
         store.panelOpened()
-        let size = hosting.fittingSize
-        // Hang just below the icon like a menu, nudged to stay on screen.
-        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        let visible = screen.visibleFrame
-        let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
-        panel.setFrame(NSRect(x: x, y: anchor.minY - 6 - size.height, width: size.width, height: size.height), display: true)
+        place()
         panel.makeKeyAndOrderFront(nil)
         button.highlight(true)
         // Clicking anywhere in another app closes the panel, the way menus behave.
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
         }
+    }
+
+    /// Sizes the panel to its content and hangs it just below the icon like a menu, nudged to stay on screen.
+    private func place() {
+        guard let button = item.button, let buttonWindow = button.window,
+              let screen = buttonWindow.screen ?? NSScreen.main else { return }
+        let size = hosting.fittingSize
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = screen.visibleFrame
+        let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
+        panel.setFrame(NSRect(x: x, y: anchor.minY - 6 - size.height, width: size.width, height: size.height),
+                       display: true, animate: panel.isVisible)
     }
 
     func close() {
@@ -72,6 +90,7 @@ final class StatusController: NSObject {
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil
         store.showSettings = false
+        store.cancelRecording()
         store.showAll = false
         store.hovered = nil
     }

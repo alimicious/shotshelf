@@ -3,9 +3,11 @@ import SwiftUI
 private let terracotta = Color(nsColor: ShelfIcon.terracotta)
 private let miniSize = CGSize(width: 100, height: 64)
 
-/// Every screenshot in the folder, searchable by name and by the text inside it.
+/// Every screenshot in the folder, searchable by name and by the text inside it. Shots can be
+/// dragged from here onto the panel's tiles to put them there.
 struct AllShotsView: View {
     @ObservedObject var store: ShelfStore
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         let results = store.searchResults
@@ -14,6 +16,7 @@ struct AllShotsView: View {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                 TextField("Search text in screenshots", text: $store.query)
                     .textFieldStyle(.plain)
+                    .focused($searchFocused)
                 if !store.query.isEmpty {
                     Button { store.query = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.borderless).foregroundStyle(.secondary)
@@ -24,7 +27,7 @@ struct AllShotsView: View {
 
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(miniSize.width), spacing: 8), count: 3), spacing: 10) {
-                    ForEach(results) { MiniCell(shot: $0, store: store) }
+                    ForEach(results) { MiniCell(shot: $0, results: results, store: store) }
                 }
                 .padding(.vertical, 4)
             }
@@ -40,6 +43,7 @@ struct AllShotsView: View {
         }
         .padding(14)
         .frame(width: 352)
+        .onAppear { searchFocused = true }
     }
 
     private var status: String {
@@ -50,6 +54,8 @@ struct AllShotsView: View {
 
 private struct MiniCell: View {
     let shot: Shot
+    /// What's showing in the grid, so Quick Look's arrow keys step through the search results.
+    let results: [Shot]
     @ObservedObject var store: ShelfStore
 
     private var isHovered: Bool { store.hovered == shot.url }
@@ -77,6 +83,17 @@ private struct MiniCell: View {
                         .padding(4)
                 }
             }
+            .overlay(alignment: .topTrailing) {
+                Button { store.quickLook(shot, among: results) } label: {
+                    Image(systemName: "eye").font(.system(size: 9, weight: .semibold))
+                        .frame(width: 20, height: 20).contentShape(Circle())
+                }
+                .buttonStyle(.borderless)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .scaleEffect(isHovered ? 1.1 : 1)
+                .padding(4)
+                .help("View bigger (Quick Look)")
+            }
             .shadow(color: .black.opacity(isHovered ? 0.25 : 0.08), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
 
             Text(shot.url.deletingPathExtension().lastPathComponent)
@@ -90,8 +107,12 @@ private struct MiniCell: View {
             if inside { store.hovered = shot.url } else if isHovered { store.hovered = nil }
         }
         .onTapGesture(count: 2) { store.open(shot) }
-        .onDrag { NSItemProvider(contentsOf: shot.url) ?? NSItemProvider() }
+        .onDrag {
+            // Lets the panel's tiles take the drop and put this shot in their spot.
+            store.dragging = shot.url
+            return NSItemProvider(contentsOf: shot.url) ?? NSItemProvider()
+        }
         .contextMenu { ShotMenu(shot: shot, store: store) }
-        .help("\(shot.date.formatted(date: .abbreviated, time: .shortened)) · double-click to open, right-click for more")
+        .help("\(shot.date.formatted(date: .abbreviated, time: .shortened)) · drag onto a tile to put it on the shelf, double-click to open")
     }
 }
