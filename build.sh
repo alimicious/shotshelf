@@ -1,14 +1,32 @@
 #!/bin/bash
-# Builds ShotShelf.app into ./build. Pass --install to copy it to /Applications and launch it.
+# Builds ShotShelf.app into ./build.
+#   --universal  build for both Apple Silicon and Intel Macs (used for releases)
+#   --install    copy the app to /Applications and launch it
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
+VERSION=$(cat VERSION)
+UNIVERSAL=false
+INSTALL=false
+for arg in "$@"; do
+    case "$arg" in
+        --universal) UNIVERSAL=true ;;
+        --install) INSTALL=true ;;
+        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
+
+ARCH_FLAGS=""
+if $UNIVERSAL; then ARCH_FLAGS="--arch arm64 --arch x86_64"; fi
+swift build -c release $ARCH_FLAGS
+BIN=$(swift build -c release $ARCH_FLAGS --show-bin-path)
 
 APP=build/ShotShelf.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp .build/release/ShotShelf "$APP/Contents/MacOS/ShotShelf"
+cp "$BIN/ShotShelf" "$APP/Contents/MacOS/ShotShelf"
+# Drop debug symbols: they record the build machine's absolute source paths (home folder included).
+strip -S -x "$APP/Contents/MacOS/ShotShelf"
 
 # The app draws its own icon; iconutil packs the sizes into an .icns.
 ICONSET=build/AppIcon.iconset
@@ -16,7 +34,7 @@ rm -rf "$ICONSET"
 "$APP/Contents/MacOS/ShotShelf" --iconset "$ICONSET"
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -27,8 +45,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>ShotShelf</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSUIElement</key><true/>
 </dict>
@@ -36,9 +54,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 codesign --force --sign - "$APP"
-echo "Built $APP"
+echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/ShotShelf"))"
 
-if [[ "${1:-}" == "--install" ]]; then
+if $INSTALL; then
     pkill -x ShotShelf && sleep 1 || true  # give the old copy time to quit before relaunching
     rm -rf /Applications/ShotShelf.app
     cp -R "$APP" /Applications/
