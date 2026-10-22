@@ -81,6 +81,89 @@ struct PresetEditor: View {
     }
 }
 
+/// What's inside the capture bar's big capsule, Spotlight style: a viewfinder, then your sizes
+/// in large type (click one to capture), or a "Capture sizes" placeholder before there are any.
+struct CaptureBarView: View {
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "viewfinder")
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(.secondary)
+            if store.presets.isEmpty {
+                Button { store.newPreset() } label: {
+                    Text("Capture sizes")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Save a screenshot size you can capture in one click")
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 2) {
+                        ForEach(Array(store.presets.enumerated()), id: \.element.id) { index, preset in
+                            if index > 0 { Divider().frame(height: 20) }
+                            PresetChip(preset: preset, store: store)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.leading, 18).padding(.trailing, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .popover(isPresented: Binding(get: { store.presetEditor != nil }, set: { if !$0 { store.presetEditor = nil } }),
+                 arrowEdge: .bottom) {
+            if let draft = store.presetEditor { PresetEditor(draft: draft, store: store) }
+        }
+    }
+}
+
+private struct PresetChip: View {
+    let preset: CapturePreset
+    @ObservedObject var store: ShelfStore
+
+    private var isHovered: Bool { store.hoveredPreset == preset.id }
+
+    var body: some View {
+        Button { store.capture(preset) } label: {
+            Text(preset.label)
+                .font(.system(size: 17, weight: .medium))
+                .lineLimit(1)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Capsule().fill(Color.primary.opacity(isHovered ? 0.1 : 0)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { store.hoveredPreset = preset.id } else if isHovered { store.hoveredPreset = nil }
+        }
+        .help("Capture a \(preset.width) × \(preset.height) area. Right-click to edit.")
+        .contextMenu {
+            Button("Edit…") { store.editPreset(preset) }
+            Button("Delete", role: .destructive) { store.deletePreset(preset.id) }
+        }
+    }
+}
+
+/// The round + beside the capsule, like Spotlight's buttons.
+struct AddSizeButton: View {
+    @ObservedObject var store: ShelfStore
+
+    var body: some View {
+        Button { store.newPreset() } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 21, weight: .medium))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Add a capture size")
+    }
+}
+
 /// A frame of the preset's size over a dimmed screen, like the ⌘⇧5 selection: drag it into
 /// place, then Capture (or Return). Esc cancels.
 @MainActor

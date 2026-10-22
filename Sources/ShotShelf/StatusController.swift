@@ -14,6 +14,13 @@ final class StatusController: NSObject {
     /// Search lives in its own panel beside the shelf, so Quick Look and drags don't close it.
     private let searchPanel: ShelfPanel
     private let searchHosting: NSHostingView<AllShotsView>
+    /// The capture bar floating under the shelf, Spotlight style: a big glass capsule with the
+    /// capture sizes and a round + beside it, in one glass container so they blend together.
+    private let bar: ShelfPanel
+    private let barCapsule = NSGlassEffectView()
+    private let barCircle = NSGlassEffectView()
+    private static let barHeight: CGFloat = 52
+    private static let barGap: CGFloat = 10
     private var clickMonitor: Any?
     private var subscriptions: Set<AnyCancellable> = []
 
@@ -29,6 +36,18 @@ final class StatusController: NSObject {
         searchGlass.cornerRadius = 24
         searchGlass.contentView = searchHosting
         searchPanel = ShelfPanel(contentView: searchGlass, size: searchHosting.fittingSize)
+        barCapsule.cornerRadius = Self.barHeight / 2
+        barCapsule.contentView = NSHostingView(rootView: CaptureBarView(store: store))
+        barCircle.cornerRadius = Self.barHeight / 2
+        barCircle.contentView = NSHostingView(rootView: AddSizeButton(store: store))
+        let barStack = NSView()
+        barStack.addSubview(barCapsule)
+        barStack.addSubview(barCircle)
+        let barContainer = NSGlassEffectContainerView()
+        barContainer.spacing = 12
+        barContainer.contentView = barStack
+        bar = ShelfPanel(contentView: barContainer, size: NSSize(width: 360, height: Self.barHeight))
+        bar.hasShadow = false  // the glass draws its own
         super.init()
 
         item.button?.target = self
@@ -55,6 +74,13 @@ final class StatusController: NSObject {
                         self.place()
                     }
                 }
+            }
+            .store(in: &subscriptions)
+
+        // The + goes away once all four sizes are taken, and the capsule widens to fill its place.
+        store.$presets.dropFirst()
+            .sink { [weak self] _ in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.layoutBar() } }
             }
             .store(in: &subscriptions)
 
@@ -96,6 +122,7 @@ final class StatusController: NSObject {
         store.panelOpened()
         place()
         panel.makeKeyAndOrderFront(nil)
+        bar.orderFront(nil)
         button.highlight(true)
         // Clicking anywhere in another app closes the panel, the way menus behave.
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
@@ -113,11 +140,29 @@ final class StatusController: NSObject {
         let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
         panel.setFrame(NSRect(x: x, y: anchor.minY - 6 - size.height, width: size.width, height: size.height),
                        display: true, animate: panel.isVisible)
+        bar.setFrame(NSRect(x: x, y: panel.frame.minY - Self.barGap - Self.barHeight, width: size.width, height: Self.barHeight),
+                     display: true)
+        layoutBar()
+    }
+
+    /// Capsule on the left, circle on the right; the capsule takes the whole width when the + is hidden.
+    private func layoutBar() {
+        let width = bar.frame.width, h = Self.barHeight
+        let showCircle = store.presets.count < CapturePreset.limit
+        barCircle.isHidden = !showCircle
+        barCircle.frame = NSRect(x: width - h, y: 0, width: h, height: h)
+        barCapsule.frame = NSRect(x: 0, y: 0, width: showCircle ? width - h - Self.barGap : width, height: h)
+        barCapsule.superview?.frame = NSRect(x: 0, y: 0, width: width, height: h)
+        for glass in [barCapsule, barCircle] {
+            glass.contentView?.frame = glass.bounds
+            glass.contentView?.autoresizingMask = [.width, .height]
+        }
     }
 
     func close() {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
+        bar.orderOut(nil)
         item.button?.highlight(false)
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil

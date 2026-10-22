@@ -76,6 +76,7 @@ final class ShelfStore: ObservableObject {
     @Published private(set) var presets: [CapturePreset]
     /// The add/edit form for a preset, while it's open.
     @Published var presetEditor: PresetDraft?
+    @Published var hoveredPreset: UUID?
 
     let folder = ShotScanner.folder
     let mascot = MascotAnimator()

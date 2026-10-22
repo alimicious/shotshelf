@@ -13,7 +13,6 @@ struct ShelfView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
-            presetRow
             grid
             folderChips
             footer
@@ -74,43 +73,6 @@ struct ShelfView: View {
 
     private var subtitle: String {
         "\(store.todayCount) today · \(store.shots.count) on \(store.folder.lastPathComponent)"
-    }
-
-    // MARK: - Capture presets
-
-    /// Up to four capture sizes: click one to place a frame of that size and capture it.
-    private var presetRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            GlassEffectContainer(spacing: 6) {
-                HStack(spacing: 6) {
-                    ForEach(store.presets) { preset in
-                        Button { store.capture(preset) } label: {
-                            Label(preset.label, systemImage: "viewfinder").font(.caption.weight(.medium))
-                        }
-                        .buttonStyle(.glass).controlSize(.small)
-                        .help("Capture a \(preset.width) × \(preset.height) area. Right-click to edit.")
-                        .contextMenu {
-                            Button("Edit…") { store.editPreset(preset) }
-                            Button("Delete", role: .destructive) { store.deletePreset(preset.id) }
-                        }
-                    }
-                    if store.presets.count < CapturePreset.limit {
-                        Button { store.newPreset() } label: {
-                            Label(store.presets.isEmpty ? "Add a capture size" : "Size", systemImage: "plus")
-                                .font(.caption.weight(.medium))
-                        }
-                        .buttonStyle(.glass).controlSize(.small)
-                        .help("Save a screenshot size you can capture in one click")
-                    }
-                }
-                .padding(.vertical, 3).padding(.horizontal, 1)
-            }
-        }
-        .frame(height: 32)
-        .popover(isPresented: Binding(get: { store.presetEditor != nil }, set: { if !$0 { store.presetEditor = nil } }),
-                 arrowEdge: .bottom) {
-            if let draft = store.presetEditor { PresetEditor(draft: draft, store: store) }
-        }
     }
 
     // MARK: - Grid
