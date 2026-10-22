@@ -38,15 +38,17 @@ final class PresetDraft: ObservableObject {
     }
 }
 
+/// The add/edit form. It lives in the glass that grows out of the bar's + (see StatusController).
 struct PresetEditor: View {
     @ObservedObject var draft: PresetDraft
     @ObservedObject var store: ShelfStore
+    @FocusState private var widthFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(draft.id == nil ? "New capture size" : "Edit capture size").font(.headline)
             HStack(spacing: 6) {
-                TextField("Width", text: $draft.width).frame(width: 72)
+                TextField("Width", text: $draft.width).frame(width: 72).focused($widthFocused)
                 Text("×").foregroundStyle(.secondary)
                 TextField("Height", text: $draft.height).frame(width: 72)
                 Text("pt").foregroundStyle(.secondary)
@@ -69,7 +71,8 @@ struct PresetEditor: View {
                     Button("Delete", role: .destructive) { store.deletePreset(id) }.buttonStyle(.glass)
                 }
                 Spacer()
-                Button("Cancel") { store.presetEditor = nil }.buttonStyle(.glass)
+                Button("Cancel") { store.presetEditor = nil }
+                    .buttonStyle(.glass).keyboardShortcut(.cancelAction)
                 Button("Save") { draft.preset.map(store.savePreset) }
                     .buttonStyle(.glassProminent).tint(terracotta)
                     .disabled(draft.preset == nil)
@@ -78,6 +81,7 @@ struct PresetEditor: View {
         }
         .padding(16)
         .frame(width: 310)
+        .onAppear { widthFocused = true }
     }
 }
 
@@ -114,10 +118,6 @@ struct CaptureBarView: View {
         }
         .padding(.leading, 18).padding(.trailing, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .popover(isPresented: Binding(get: { store.presetEditor != nil }, set: { if !$0 { store.presetEditor = nil } }),
-                 arrowEdge: .bottom) {
-            if let draft = store.presetEditor { PresetEditor(draft: draft, store: store) }
-        }
     }
 }
 

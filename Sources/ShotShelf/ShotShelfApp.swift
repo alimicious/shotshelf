@@ -168,19 +168,28 @@ struct ShotShelfApp: App {
             after(1.5) {
                 print("after toggle: \(visibleWindows())")
                 print("open shortcut registered: \(controller()?.store.hotKeyRegistered ?? false)")
-                controller()?.close()
-                controller()?.store.openSearch()
-                after(1.5) {
-                    print("after search shortcut: \(visibleWindows())")
-                    // Quick Look from search should leave search (and the shelf) open.
-                    if let store = controller()?.store, let first = store.searchResults.first {
-                        store.quickLook(first, among: store.searchResults)
-                    }
-                    after(1.5) {
-                        let panel = QLPreviewPanel.shared()
-                        print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
-                        print("with quick look open: \(visibleWindows())")
-                        exit(0)
+                print("bar at rest: \(controller()?.barSummary ?? "-")")
+                controller()?.store.newPreset()
+                after(0.9) {
+                    print("editor open: \(controller()?.barSummary ?? "-")")
+                    controller()?.store.presetEditor = nil
+                    after(0.8) {
+                        print("editor closed: \(controller()?.barSummary ?? "-")")
+                        controller()?.close()
+                        controller()?.store.openSearch()
+                        after(1.5) {
+                            print("after search shortcut: \(visibleWindows())")
+                            // Quick Look from search should leave search (and the shelf) open.
+                            if let store = controller()?.store, let first = store.searchResults.first {
+                                store.quickLook(first, among: store.searchResults)
+                            }
+                            after(1.5) {
+                                let panel = QLPreviewPanel.shared()
+                                print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
+                                print("with quick look open: \(visibleWindows())")
+                                exit(0)
+                            }
+                        }
                     }
                 }
             }

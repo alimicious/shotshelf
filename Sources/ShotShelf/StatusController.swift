@@ -18,7 +18,13 @@ final class StatusController: NSObject {
     /// capture sizes and a round + beside it, in one glass container so they blend together.
     private let bar: ShelfPanel
     private let barCapsule = NSGlassEffectView()
+    /// The + circle. Adding or editing a size grows this same piece of glass into the editor card,
+    /// so the form comes out of the +, and shrinks it back when the form closes.
     private let barCircle = NSGlassEffectView()
+    /// Holds the + and, while it's open, the editor; clipped to the glass's rounded shape.
+    private let circleContent = NSView()
+    private let plusHosting: NSHostingView<AddSizeButton>
+    private var editorHosting: NSView?
     private static let barHeight: CGFloat = 52
     private static let barGap: CGFloat = 10
     private var clickMonitor: Any?
@@ -39,12 +45,18 @@ final class StatusController: NSObject {
         barCapsule.cornerRadius = Self.barHeight / 2
         barCapsule.contentView = NSHostingView(rootView: CaptureBarView(store: store))
         barCircle.cornerRadius = Self.barHeight / 2
-        barCircle.contentView = NSHostingView(rootView: AddSizeButton(store: store))
+        plusHosting = NSHostingView(rootView: AddSizeButton(store: store))
+        plusHosting.autoresizingMask = [.width, .height]
+        circleContent.wantsLayer = true
+        circleContent.layer?.cornerRadius = Self.barHeight / 2
+        circleContent.layer?.masksToBounds = true
+        circleContent.addSubview(plusHosting)
+        barCircle.contentView = circleContent
         let barStack = NSView()
         barStack.addSubview(barCapsule)
         barStack.addSubview(barCircle)
         let barContainer = NSGlassEffectContainerView()
-        barContainer.spacing = 12
+        barContainer.spacing = 8  // less than the gap, so the pieces stay apart at rest
         barContainer.contentView = barStack
         bar = ShelfPanel(contentView: barContainer, size: NSSize(width: 360, height: Self.barHeight))
         bar.hasShadow = false  // the glass draws its own
@@ -84,6 +96,16 @@ final class StatusController: NSObject {
             }
             .store(in: &subscriptions)
 
+        store.$presetEditor.dropFirst()
+            .sink { [weak self] draft in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        if let draft { self?.openEditor(draft) } else { self?.closeEditor() }
+                    }
+                }
+            }
+            .store(in: &subscriptions)
+
         store.$showAll.dropFirst().removeDuplicates()
             .sink { [weak self] show in
                 MainActor.assumeIsolated { show ? self?.showSearch() : self?.hideSearch() }
@@ -111,6 +133,12 @@ final class StatusController: NSObject {
     private func updateButton(frame: ShelfIcon.Frame, count: Int) {
         item.button?.image = ShelfIcon.image(frame: frame)
         item.button?.title = count > 0 ? "\(count)" : ""
+    }
+
+    /// For `--selftest`: the capture bar window and the + glass, to check the editor morph.
+    var barSummary: String {
+        let c = barCircle.frame
+        return "window \(Int(bar.frame.width))×\(Int(bar.frame.height)), + glass \(Int(c.width))×\(Int(c.height)) at (\(Int(c.minX)),\(Int(c.minY))), key=\(bar.isKeyWindow)"
     }
 
     @objc func toggle() {
@@ -145,18 +173,79 @@ final class StatusController: NSObject {
         layoutBar()
     }
 
-    /// Capsule on the left, circle on the right; the capsule takes the whole width when the + is hidden.
+    /// Capsule on the left, circle on the right, both along the top of the bar's window (which grows
+    /// downward while the editor is open). The capsule takes the whole width once the + is gone.
     private func layoutBar() {
-        let width = bar.frame.width, h = Self.barHeight
-        let showCircle = store.presets.count < CapturePreset.limit
-        barCircle.isHidden = !showCircle
-        barCircle.frame = NSRect(x: width - h, y: 0, width: h, height: h)
-        barCapsule.frame = NSRect(x: 0, y: 0, width: showCircle ? width - h - Self.barGap : width, height: h)
-        barCapsule.superview?.frame = NSRect(x: 0, y: 0, width: width, height: h)
+        let width = bar.frame.width, height = bar.frame.height, h = Self.barHeight
+        let hasRoom = store.presets.count < CapturePreset.limit
+        barCircle.isHidden = !hasRoom && editorHosting == nil
+        if editorHosting == nil { barCircle.frame = NSRect(x: width - h, y: height - h, width: h, height: h) }
+        barCapsule.frame = NSRect(x: 0, y: height - h, width: hasRoom ? width - h - Self.barGap : width, height: h)
+        barCapsule.superview?.frame = NSRect(x: 0, y: 0, width: width, height: height)
         for glass in [barCapsule, barCircle] {
             glass.contentView?.frame = glass.bounds
             glass.contentView?.autoresizingMask = [.width, .height]
         }
+    }
+
+    /// Grows the + into the editor card below the bar, with a little overshoot, fading the form in.
+    private func openEditor(_ draft: PresetDraft) {
+        guard bar.isVisible else { return }
+        editorHosting?.removeFromSuperview()
+        let form = NSHostingView(rootView: PresetEditor(draft: draft, store: store))
+        let size = form.fittingSize
+        let h = Self.barHeight
+        // Make room below the bar first, keeping the bar itself where it is.
+        let top = bar.frame.maxY, width = bar.frame.width
+        bar.setFrame(NSRect(x: bar.frame.minX, y: top - h - Self.barGap - size.height,
+                            width: width, height: h + Self.barGap + size.height), display: true)
+        layoutBar()
+
+        // The form stays pinned to the glass's top-right corner as the glass grows out from under it.
+        let glass = barCircle.bounds
+        form.frame = NSRect(x: glass.maxX - size.width, y: glass.maxY - size.height, width: size.width, height: size.height)
+        form.autoresizingMask = [.minXMargin, .minYMargin]
+        form.alphaValue = 0
+        circleContent.addSubview(form)
+        editorHosting = form
+        barCircle.isHidden = false
+        bar.makeKey()  // so the fields take typing
+
+        let card = NSRect(x: width - size.width, y: 0, width: size.width, height: size.height)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.45
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 1.15, 0.45, 1)  // springy, slight overshoot
+            context.allowsImplicitAnimation = true
+            barCircle.animator().frame = card
+            plusHosting.animator().alphaValue = 0
+            form.animator().alphaValue = 1
+        }
+    }
+
+    /// Shrinks the card back into the +, then gives the window back its bar-only size.
+    private func closeEditor() {
+        guard let form = editorHosting else { return }
+        let h = Self.barHeight
+        let circle = NSRect(x: bar.frame.width - h, y: bar.frame.height - h, width: h, height: h)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.3
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
+            context.allowsImplicitAnimation = true
+            barCircle.animator().frame = circle
+            plusHosting.animator().alphaValue = 1
+            form.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                form.removeFromSuperview()
+                guard self.editorHosting === form else { return }  // a new form opened meanwhile
+                self.editorHosting = nil
+                let frame = self.bar.frame
+                self.bar.setFrame(NSRect(x: frame.minX, y: frame.maxY - h, width: frame.width, height: h), display: true)
+                self.layoutBar()
+                if self.panel.isVisible { self.panel.makeKey() }
+            }
+        })
     }
 
     func close() {
@@ -170,6 +259,7 @@ final class StatusController: NSObject {
         store.showUpdate = false
         store.cancelRecording()
         store.showAll = false
+        store.presetEditor = nil
         store.hovered = nil
     }
 }
