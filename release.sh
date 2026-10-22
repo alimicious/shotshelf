@@ -17,6 +17,11 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     exit 1
 fi
 # Installed copies only accept updates signed with this key, which lives in this Mac's Keychain.
+if ! security find-certificate -c "ShotShelf Code Signing" >/dev/null 2>&1; then
+    echo "No \"ShotShelf Code Signing\" certificate in your Keychain; releases must be signed with it" \
+         "so permissions carry over between versions." >&2
+    exit 1
+fi
 KEY_NAME="ShotShelf update signing key"
 if ! security find-generic-password -s "$KEY_NAME" >/dev/null 2>&1; then
     echo "No \"$KEY_NAME\" in your Keychain, so the update can't be signed." >&2

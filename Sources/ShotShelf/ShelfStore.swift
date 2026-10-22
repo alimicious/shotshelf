@@ -123,6 +123,7 @@ final class ShelfStore: ObservableObject {
             Prefs.smartNames: true,
             Prefs.mascot: true,
             Prefs.autoUpdates: true,
+            Prefs.searchEyes: true,
         ])
         panelSize = Self.loadPanelSize()
         openShortcut = Self.loadShortcut(Prefs.openShortcut, fallback: Shortcut.legacy(defaults.string(forKey: Prefs.hotKey)) ?? .openDefault)
@@ -777,17 +778,37 @@ final class ShelfStore: ObservableObject {
         // screencapture runs on ShotShelf's behalf, so it needs ShotShelf's Screen Recording permission;
         // without it the image would only show the desktop.
         guard CGPreflightScreenCaptureAccess() else {
-            CGRequestScreenCaptureAccess()
-            showToast("Allow ShotShelf in Screen Recording, then try again", symbol: "rectangle.dashed.badge.record")
-            if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                NSWorkspace.shared.open(settings)
-            }
+            askForScreenRecording()
             return
         }
         closePanel?()
         let overlay = CaptureOverlay(preset: preset) { [weak self] rect in self?.takeScreenshot(of: rect) }
         captureOverlay = overlay
         overlay.show()
+    }
+
+    /// Explains what to do, since the switch can look on when it isn't: macOS may still have it set
+    /// for an older copy of the app, which only removing and re-adding it fixes.
+    private func askForScreenRecording() {
+        CGRequestScreenCaptureAccess()  // adds ShotShelf to the list the first time
+        closePanel?()
+        let alert = NSAlert()
+        alert.messageText = "ShotShelf needs Screen Recording to capture a set size"
+        alert.informativeText = """
+            In System Settings › Privacy & Security › Screen Recording, turn ShotShelf on.
+
+            If it already looks on, macOS may still have it set for an older copy: select ShotShelf, \
+            remove it with the − button, then add it again with + (or try a capture size once more).
+
+            Then quit ShotShelf (right-click its menu bar icon) and open it again.
+            """
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn,
+           let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(settings)
+        }
     }
 
     /// Captures `rect` (global, top-left origin) into the screenshot folder, named and tagged

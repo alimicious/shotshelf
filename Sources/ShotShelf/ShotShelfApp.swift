@@ -16,6 +16,7 @@ enum Prefs {
     static let autoUpdates = "autoUpdates"    // Bool, check GitHub for a newer version once a day
     static let lastUpdateCheck = "lastUpdateCheck"  // Double, when that last happened
     static let capturePresets = "capturePresets"    // JSON [CapturePreset]
+    static let searchEyes = "searchEyes"            // Bool, show the eye buttons on search results
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
     static let mascot = "mascot"              // Bool, mascot snaps a photo for new shots
 }

@@ -53,7 +53,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP"
+# Sign with the "ShotShelf Code Signing" certificate from this Mac's Keychain when it's there: macOS
+# then sees every build as the same app, so permissions (Screen Recording, Desktop access) survive
+# updates. An ad-hoc signature, the fallback when building from source elsewhere, is a fingerprint of
+# one exact build, so macOS treats each update as a new app and asks again.
+IDENTITY="ShotShelf Code Signing"
+if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
+    # The Keychain occasionally refuses the first request, so try twice.
+    codesign --force --sign "$IDENTITY" "$APP" || codesign --force --sign "$IDENTITY" "$APP"
+else
+    echo "No \"$IDENTITY\" certificate in the Keychain; signing ad hoc (permissions won't survive updates)." >&2
+    codesign --force --sign - "$APP"
+fi
 echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/ShotShelf"))"
 
 if $INSTALL; then

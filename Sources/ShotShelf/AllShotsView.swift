@@ -76,6 +76,7 @@ private struct MiniCell: View {
     /// What's showing in the grid, so Quick Look's arrow keys step through the search results.
     let results: [Shot]
     @ObservedObject var store: ShelfStore
+    @AppStorage(Prefs.searchEyes) private var showEye = true
 
     /// Selected by the arrow keys or the pointer; the two share one selection.
     private var isHovered: Bool { store.searchSelection == shot.url }
@@ -104,15 +105,18 @@ private struct MiniCell: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                Button { store.quickLook(shot, among: results, follow: { store.searchSelection = $0 }) } label: {
-                    Image(systemName: "eye").font(.system(size: 9, weight: .semibold))
-                        .frame(width: 20, height: 20).contentShape(Circle())
+                // Can be turned off in Settings; Space still previews.
+                if showEye {
+                    Button { store.quickLook(shot, among: results, follow: { store.searchSelection = $0 }) } label: {
+                        Image(systemName: "eye").font(.system(size: 9, weight: .semibold))
+                            .frame(width: 20, height: 20).contentShape(Circle())
+                    }
+                    .buttonStyle(.borderless)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .scaleEffect(isHovered ? 1.1 : 1)
+                    .padding(4)
+                    .help("View bigger (Quick Look)")
                 }
-                .buttonStyle(.borderless)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .scaleEffect(isHovered ? 1.1 : 1)
-                .padding(4)
-                .help("View bigger (Quick Look)")
             }
             .shadow(color: .black.opacity(isHovered ? 0.25 : 0.08), radius: isHovered ? 6 : 2, y: isHovered ? 3 : 1)
 

@@ -9,6 +9,7 @@ struct ShelfView: View {
     @AppStorage(Prefs.smartNames) private var smartNames = true
     @AppStorage(Prefs.mascot) private var mascot = true
     @AppStorage(Prefs.autoUpdates) private var autoUpdates = true
+    @AppStorage(Prefs.searchEyes) private var searchEyes = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -204,6 +205,7 @@ struct ShelfView: View {
                 Text("After 1 day").tag(1)
                 Text("After 3 days").tag(3)
                 Text("After 7 days").tag(7)
+                Text("After 1 month").tag(30)
             }
             Text("Moves unpinned screenshots to the Trash once they're this old.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -217,6 +219,7 @@ struct ShelfView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Name new shots from their text", isOn: $smartNames)
             Toggle("Mascot snaps new shots", isOn: $mascot)
+            Toggle("Eye buttons in search", isOn: $searchEyes)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
             Divider()
             Toggle("Check for updates automatically", isOn: $autoUpdates)
