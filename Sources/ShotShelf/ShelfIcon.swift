@@ -1,99 +1,41 @@
 import AppKit
 
-/// The menu bar icon, drawn in code so there's no asset to ship. At rest it's a rounded polaroid
-/// template glyph, so the menu bar tints it like the system icons (white on a dark bar, black on a
-/// light one). When a new screenshot lands, the pixel mascot pops up and snaps a photo in colour.
+/// The menu bar icon, drawn in code so there's no asset to ship. It's a rounded polaroid template
+/// glyph, so the menu bar tints it like the system icons (white on a dark bar, black on a light one).
+/// When a new screenshot lands it flashes, a blank photo slides up out of the bar, and the picture
+/// develops on it.
 enum ShelfIcon {
     static let terracotta = NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1)  // #D97757
 
-    enum Frame: Hashable {
-        case polaroid, mascot, holding, flash
-    }
+    /// One drawing of the polaroid. `flash` fills the photo window (0 to 1), `scene` is how far the
+    /// sun and hill have developed (0 to 1), and `offset` moves the card down in points, out through
+    /// the bottom of the icon.
+    struct Frame: Hashable {
+        var flash: CGFloat = 0
+        var scene: CGFloat = 1
+        var offset: CGFloat = 0
 
-    /// Pixel frames: "#" mascot, "w" polaroid frame, "k" photo, "y" camera flash.
-    private static let holding = [
-        "...........wwwww",
-        "...........wkkkw",
-        "...........wkkkw",
-        "..########.wwwww",
-        "..########.wwwww",
-        "..#.####.#...#..",
-        "..#.####.#...#..",
-        "##############..",
-        "..########......",
-        "..########......",
-        "..#.#..#.#......",
-        "..#.#..#.#......",
-    ]
-
-    private static let sprites: [Frame: [String]] = [
-        .mascot: [
-            "................",
-            "................",
-            "................",
-            "..########......",
-            "..########......",
-            "..#.####.#......",
-            "..#.####.#......",
-            "############....",
-            "..########......",
-            "..########......",
-            "..#.#..#.#......",
-            "..#.#..#.#......",
-        ],
-        .holding: holding,
-        .flash: replacing(holding, [0: "..........ywwwww", 1: "...........wyyyw", 2: "...........wyyyw", 5: "..#.####.#...#.y"]),
-    ]
-
-    private static let colors: [Character: NSColor] = [
-        "#": terracotta,
-        "w": .white,
-        "k": NSColor(white: 0.25, alpha: 1),
-        "y": NSColor(srgbRed: 1, green: 0.93, blue: 0.6, alpha: 1),
-    ]
-
-    private static func replacing(_ rows: [String], _ changes: [Int: String]) -> [String] {
-        rows.enumerated().map { changes[$0.offset] ?? $0.element }
+        static let rest = Frame()
     }
 
     private static var cache: [String: NSImage] = [:]
 
-    static func image(size: CGFloat = 18, frame: Frame = .polaroid) -> NSImage {
+    static func image(size: CGFloat = 18, frame: Frame = .rest) -> NSImage {
         let key = "\(frame)-\(size)"
         if let cached = cache[key] { return cached }
-        let image = sprites[frame].map { pixelArt($0, size: size) } ?? polaroid(size: size)
+        let image = polaroid(size: size, frame: frame)
         cache[key] = image
         return image
     }
 
-    private static func pixelArt(_ sprite: [String], size: CGFloat) -> NSImage {
-        let cols = CGFloat(sprite[0].count), rows = CGFloat(sprite.count)
-        let px = size / cols
-        return NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
-            let originY = (size - rows * px) / 2
-            // One path per colour so anti-aliasing doesn't leave seams between pixels.
-            for (char, color) in colors {
-                let path = NSBezierPath()
-                for (r, line) in sprite.enumerated() {
-                    for (c, ch) in line.enumerated() where ch == char {
-                        path.appendRect(NSRect(x: CGFloat(c) * px, y: originY + CGFloat(r) * px, width: px, height: px))
-                    }
-                }
-                color.setFill()
-                path.fill()
-            }
-            return true
-        }
-    }
-
-    private static func polaroid(size: CGFloat) -> NSImage {
+    private static func polaroid(size: CGFloat, frame f: Frame) -> NSImage {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: true) { _ in
             // Laid out on an 18pt grid and scaled, so every size keeps the same proportions.
             let s = size / 18
             func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, _ h: CGFloat) -> NSRect {
-                NSRect(x: x * s, y: y * s, width: w * s, height: h * s)
+                NSRect(x: x * s, y: (y + f.offset) * s, width: w * s, height: h * s)
             }
-            func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x * s, y: y * s) }
+            func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: x * s, y: (y + f.offset) * s) }
 
             NSColor.black.setFill()
 
@@ -104,9 +46,11 @@ enum ShelfIcon {
             frame.windingRule = .evenOdd
             frame.fill()
 
-            // Inside the photo: a sun and a soft hill, clipped to the window's rounded corners.
+            // Inside the photo: a sun and a soft hill, clipped to the window's rounded corners. The
+            // template's alpha is all the menu bar uses, so a faint scene reads as a developing photo.
             NSGraphicsContext.saveGraphicsState()
             photo.addClip()
+            NSColor.black.withAlphaComponent(f.scene).setFill()
             NSBezierPath(ovalIn: rect(10.1, 4.6, 2.2, 2.2)).fill()
             let hill = NSBezierPath()
             hill.move(to: point(4, 11.75))
@@ -116,6 +60,15 @@ enum ShelfIcon {
             hill.close()
             hill.fill()
             NSGraphicsContext.restoreGraphicsState()
+
+            // The flash fills the window, with a hairline over its edge so no seam shows where it
+            // meets the frame.
+            if f.flash > 0 {
+                NSColor.black.withAlphaComponent(f.flash).set()
+                photo.fill()
+                photo.lineWidth = 0.75 * s
+                photo.stroke()
+            }
             return true
         }
         image.isTemplate = true
@@ -123,24 +76,39 @@ enum ShelfIcon {
     }
 }
 
-/// Plays the mascot's photo-snap when a new screenshot lands, then settles back on the polaroid.
+/// Plays the new-shot animation on the menu bar icon: a camera flash, the flashed card dropping
+/// away, a blank photo sliding up out of the bar with a little overshoot, and the picture
+/// developing on it. With Reduce Motion the card stays put: the flash fades and the photo develops.
 @MainActor
-final class MascotAnimator: ObservableObject {
-    @Published private(set) var frame: ShelfIcon.Frame = .polaroid
+final class IconAnimator: ObservableObject {
+    @Published private(set) var frame = ShelfIcon.Frame.rest
     private var task: Task<Void, Never>?
 
-    func celebrate() {
+    private static let tick = 1.0 / 30
+
+    /// Every frame with how long it stays up, in seconds.
+    static func steps(reduceMotion: Bool) -> [(ShelfIcon.Frame, Double)] {
+        let flash = [(ShelfIcon.Frame(flash: 1), 0.12)]
+        let develop = [0.08, 0.18, 0.3, 0.44, 0.58, 0.72, 0.86].map { (ShelfIcon.Frame(scene: $0), 0.13) }
+        if reduceMotion {
+            let fade = [0.6, 0.3].map { (ShelfIcon.Frame(flash: $0, scene: 0), tick * 2) }
+            return flash + fade + develop
+        }
+        let drop = [2.5, 7, 13].map { (ShelfIcon.Frame(flash: 1, offset: $0), tick) }
+        let rise = [18.0, 12, 7.5, 4, 1.5, 0, -1, -1.25, -0.75, -0.25, 0].map { (ShelfIcon.Frame(scene: 0, offset: $0), tick) }
+        return flash + drop + rise + develop
+    }
+
+    func play() {
         task?.cancel()
+        let steps = Self.steps(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
         task = Task {
-            let steps: [(ShelfIcon.Frame, Double)] = [
-                (.mascot, 0.3), (.holding, 0.35), (.flash, 0.12), (.holding, 0.2), (.flash, 0.12), (.holding, 1.4),
-            ]
             for (frame, seconds) in steps {
                 self.frame = frame
                 try? await Task.sleep(for: .seconds(seconds))
                 if Task.isCancelled { return }
             }
-            frame = .polaroid
+            frame = .rest
         }
     }
 }

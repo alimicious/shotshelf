@@ -79,7 +79,7 @@ final class ShelfStore: ObservableObject {
     @Published var hoveredPreset: UUID?
 
     let folder = ShotScanner.folder
-    let mascot = MascotAnimator()
+    let iconAnimator = IconAnimator()
     /// True for the static store `--render` draws; it never touches files or the menu bar.
     let isPreview: Bool
     /// The panel's window, so keyboard shortcuts only act while it's the one in front.
@@ -121,7 +121,7 @@ final class ShelfStore: ObservableObject {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
             Prefs.smartNames: true,
-            Prefs.mascot: true,
+            Prefs.iconAnimation: true,
             Prefs.autoUpdates: true,
             Prefs.searchEyes: true,
         ])
@@ -250,7 +250,7 @@ final class ShelfStore: ObservableObject {
 
     // MARK: - New arrivals
 
-    /// Shots that just appeared: the mascot snaps a photo, and each one's text is read and
+    /// Shots that just appeared: the menu bar icon plays its animation, and each one's text is read and
     /// (if smart names are on) used to rename it.
     private func detectArrivals() {
         let paths = Set(shots.map(\.url.path))
@@ -261,7 +261,7 @@ final class ShelfStore: ObservableObject {
         }
         guard !arrived.isEmpty else { return }
         handled.formUnion(arrived.map(\.url.path))
-        if UserDefaults.standard.bool(forKey: Prefs.mascot) { mascot.celebrate() }
+        if UserDefaults.standard.bool(forKey: Prefs.iconAnimation) { iconAnimator.play() }
         let app = Self.frontmostAppName()
         for shot in arrived {
             Task { await read(shot, namingAfter: app) }

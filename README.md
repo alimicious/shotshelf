@@ -11,7 +11,7 @@ A Liquid Glass menu bar shelf for your recent screenshots. Click the polaroid (o
 - **Shortcuts**: record your own in Settings for opening the shelf (⌥⌘S by default) and for jumping straight to search.
 - **Sizes**: Small, Medium or Large in Settings. Bigger panels get bigger tiles and more of them (4, 7 or 13 shots).
 - **Tidy** moves unpinned shots from before today to the Trash; auto-tidy can do it on a schedule.
-- The pixel mascot pops up and snaps a photo whenever you take a screenshot.
+- **New shots** make the menu bar polaroid flash, then a fresh photo slides up and develops, and a count of new shots sits beside it until you open the shelf. The animation can be turned off in Settings.
 
 It reads the folder macOS saves screenshots to (the Desktop unless you changed it), top level only, and goes by the tag macOS puts on every screenshot, so other images are never touched. Nothing is deleted outright; it all goes to the Trash. Everything stays on your Mac: the only network request is a daily check of GitHub for a newer version, which you can turn off in Settings.
 
@@ -42,5 +42,3 @@ Requires the Swift toolchain (the Xcode Command Line Tools are enough).
 `release.sh` signs each zip with a private key stored in the maintainer's Keychain as "ShotShelf update signing key" and uploads the signature next to the zip. The matching public key is in `Updater.swift`. Keep a backup of the private key (Keychain Access → that item → Show password, into a password manager): without it, installed copies can't verify future updates.
 
 Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png [--size small|medium|large]` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened. The app icon is drawn in code too: `build.sh` runs `ShotShelf --iconset` and packs the result with `iconutil`.
-
-*Unofficial fan project, not affiliated with or endorsed by Anthropic.*

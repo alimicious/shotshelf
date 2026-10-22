@@ -47,7 +47,7 @@ A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up bi
 - **Small, Medium or Large** panel: bigger panels show bigger tiles and more of them.
 - **Capture sizes:** save up to 20 sizes in the Spotlight-style bar under the shelf, then click one to capture exactly that area.
 - **Tidy** sends unpinned shots from before today to the Trash, by hand or on a schedule.
-- A little pixel mascot snaps a photo in your menu bar whenever you take a screenshot.
+- **New shots** flash in your menu bar: a fresh polaroid slides up and develops, and a count shows how many arrived.
 
 ## Install
 
@@ -59,6 +59,4 @@ A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up bi
 Then click the polaroid in your menu bar, or press ⌥⌘S.
 
 Requires macOS 26 or later. Runs on Apple Silicon and Intel Macs. Everything stays on your Mac: ShotShelf only reads your screenshot folder, and its one network request is a daily check of GitHub for a newer version (you can turn it off in settings). Updates install from inside the app and are signed, so only genuine releases are accepted. Anything ShotShelf removes goes to the Trash, so it can always be put back.
-
-*Unofficial fan project, not affiliated with or endorsed by Anthropic.*
 NOTES

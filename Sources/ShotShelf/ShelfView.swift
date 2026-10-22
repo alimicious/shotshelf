@@ -7,7 +7,7 @@ struct ShelfView: View {
     @ObservedObject var store: ShelfStore
     @AppStorage(Prefs.autoTidyDays) private var autoTidyDays = 0
     @AppStorage(Prefs.smartNames) private var smartNames = true
-    @AppStorage(Prefs.mascot) private var mascot = true
+    @AppStorage(Prefs.iconAnimation) private var iconAnimation = true
     @AppStorage(Prefs.autoUpdates) private var autoUpdates = true
     @AppStorage(Prefs.searchEyes) private var searchEyes = true
 
@@ -218,7 +218,7 @@ struct ShelfView: View {
             Text(store.recording == nil ? "Shortcuts work from any app." : "Press the new shortcut. Esc cancels, Delete removes it.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Name new shots from their text", isOn: $smartNames)
-            Toggle("Mascot snaps new shots", isOn: $mascot)
+            Toggle("Animate new shots in the menu bar", isOn: $iconAnimation)
             Toggle("Eye buttons in search", isOn: $searchEyes)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
             Divider()

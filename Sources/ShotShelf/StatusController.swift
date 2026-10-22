@@ -65,8 +65,8 @@ final class StatusController: NSObject {
         store.togglePanel = { [weak self] in self?.toggle() }
         store.closePanel = { [weak self] in self?.close() }
 
-        // Keep the menu bar icon in step with the mascot and the new-shot badge.
-        store.mascot.$frame.combineLatest(store.$newCount)
+        // Keep the menu bar icon in step with its animation and the new-shot badge.
+        store.iconAnimator.$frame.combineLatest(store.$newCount)
             .sink { [weak self] frame, count in
                 MainActor.assumeIsolated { self?.updateButton(frame: frame, count: count) }
             }

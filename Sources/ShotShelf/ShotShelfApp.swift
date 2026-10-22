@@ -18,7 +18,7 @@ enum Prefs {
     static let capturePresets = "capturePresets"    // JSON [CapturePreset]
     static let searchEyes = "searchEyes"            // Bool, show the eye buttons on search results
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
-    static let mascot = "mascot"              // Bool, mascot snaps a photo for new shots
+    static let iconAnimation = "mascot"       // Bool, animate the menu bar icon for new shots (stored under its old name)
 }
 
 @main
@@ -137,15 +137,22 @@ struct ShotShelfApp: App {
         }
     }
 
-    /// Every menu bar icon frame side by side, big, on a dark and a light strip.
+    /// The menu bar icon at rest and then every frame of its new-shot animation, with and without
+    /// Reduce Motion, on a dark and a light strip.
     @MainActor private static func renderIcons(to path: String) {
-        let frames: [ShelfIcon.Frame] = [.polaroid, .mascot, .holding, .flash]
+        let rows = [false, true].map { reduceMotion in
+            [ShelfIcon.Frame.rest] + IconAnimator.steps(reduceMotion: reduceMotion).map(\.0)
+        }
         let renderer = ImageRenderer(content: VStack(spacing: 0) {
             ForEach([Color.black, Color(white: 0.92)], id: \.self) { bg in
-                HStack(spacing: 24) {
-                    ForEach(frames, id: \.self) { frame in
-                        Image(nsImage: ShelfIcon.image(size: 72, frame: frame)).renderingMode(frame == .polaroid ? .template : .original)
-                            .foregroundStyle(bg == .black ? .white : .black)
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(rows.indices, id: \.self) { row in
+                        HStack(spacing: 10) {
+                            ForEach(rows[row].indices, id: \.self) { i in
+                                Image(nsImage: ShelfIcon.image(size: 40, frame: rows[row][i])).renderingMode(.template)
+                                    .foregroundStyle(bg == .black ? .white : .black)
+                            }
+                        }
                     }
                 }
                 .padding(20).background(bg)
