@@ -16,4 +16,4 @@ It reads the folder macOS saves screenshots to (the Desktop unless you changed i
 ./build.sh --install   # build, install to /Applications and launch
 ```
 
-Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened.
+Debug flags: `--dump` lists screenshots and tests OCR, `--render out.png` saves an image of the panel, `--render-icons out.png` the menu bar icon frames, and `--selftest` opens the panel and Quick Look and reports what happened. The app icon is drawn in code too: `build.sh` runs `ShotShelf --iconset` and packs the result with `iconutil`.

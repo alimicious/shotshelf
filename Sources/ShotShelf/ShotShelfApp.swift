@@ -20,7 +20,17 @@ struct ShotShelfApp: App {
     init() {
         // Debug flags: `--dump` lists the screenshots found, `--render <file.png>` saves the panel,
         // `--selftest` opens the panel and Quick Look on screen and reports what happened.
+        // Build flag: `--iconset <dir>` writes the app icon PNGs (see build.sh).
         let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--iconset"), i + 1 < args.count {
+            do {
+                try AppIcon.writeIconset(to: URL(fileURLWithPath: args[i + 1]))
+                exit(0)
+            } catch {
+                print("Couldn't write iconset: \(error)")
+                exit(1)
+            }
+        }
         if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
             Self.renderPanel(to: args[i + 1])
             exit(0)
