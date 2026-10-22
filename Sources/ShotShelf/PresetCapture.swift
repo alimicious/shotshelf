@@ -192,7 +192,6 @@ final class CaptureOverlay: ObservableObject {
     func show() {
         let window = ShelfPanel(contentView: NSHostingView(rootView: CaptureOverlayView(model: self)), size: screen.frame.size)
         window.level = .screenSaver
-        window.hasShadow = false
         window.setFrame(screen.frame, display: true)
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)

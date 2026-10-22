@@ -59,7 +59,6 @@ final class StatusController: NSObject {
         barContainer.spacing = 8  // less than the gap, so the pieces stay apart at rest
         barContainer.contentView = barStack
         bar = ShelfPanel(contentView: barContainer, size: NSSize(width: 360, height: Self.barHeight))
-        bar.hasShadow = false  // the glass draws its own
         super.init()
 
         item.button?.target = self
@@ -272,7 +271,10 @@ final class ShelfPanel: NSPanel {
         self.contentView = contentView
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        // No window shadow: macOS works it out from the window's rectangle (and before the glass has
+        // drawn, on first open), which leaves hard square corners around rounded glass. The glass
+        // gives every panel the same soft rounded edge instead.
+        hasShadow = false
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
         isReleasedWhenClosed = false
