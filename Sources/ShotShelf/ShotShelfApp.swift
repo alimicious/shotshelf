@@ -58,6 +58,10 @@ struct ShotShelfApp: App {
             Self.renderIcons(to: args[i + 1])
             exit(0)
         }
+        if let i = args.firstIndex(of: "--render-bar"), i + 1 < args.count {
+            Self.renderBar(to: args[i + 1])
+            exit(0)
+        }
         if args.contains("--selftest") { Self.selfTest() }
 
         // Release flags (see release.sh): `--generate-update-key` prints a new private key then its
@@ -147,6 +151,36 @@ struct ShotShelfApp: App {
             }
         })
         renderer.scale = 1
+        if let tiff = renderer.nsImage?.tiffRepresentation,
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    /// The capture bar's capsule with 2 and with 20 sizes, and the Update pill's light band frozen
+    /// at three points of its sweep, on a stand-in pill (the renderer can't draw glass).
+    @MainActor private static func renderBar(to path: String) {
+        func bar(_ count: Int) -> some View {
+            let store = ShelfStore(preview: [])
+            store.setPreviewPresets(count)
+            return CaptureBarView(store: store)
+                .frame(width: 298, height: 52)
+                .background(Capsule().fill(Color(white: 0.2)))
+        }
+        let pill = Label("Update", systemImage: "arrow.down.circle.fill").font(.callout.weight(.semibold))
+            .foregroundStyle(.white).padding(.horizontal, 14).padding(.vertical, 7)
+            .background(Capsule().fill(Color(nsColor: ShelfIcon.terracotta)))
+        let renderer = ImageRenderer(content: VStack(alignment: .leading, spacing: 14) {
+            bar(2)
+            bar(20)
+            HStack(spacing: 14) {
+                ForEach([0.1, 0.4, 0.75], id: \.self) { p in pill.overlay { SweepBand(position: p) } }
+            }
+        }
+        .padding(20)
+        .background(Color(white: 0.1))
+        .environment(\.colorScheme, .dark))
+        renderer.scale = 2
         if let tiff = renderer.nsImage?.tiffRepresentation,
            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
             try? png.write(to: URL(fileURLWithPath: path))

@@ -67,6 +67,7 @@ struct ShelfView: View {
             Label("Update", systemImage: "arrow.down.circle.fill").font(.callout.weight(.semibold))
         }
         .buttonStyle(.glassProminent).tint(terracotta)
+        .modifier(LightSweep())
         .help("ShotShelf \(update.version) is available")
         .popover(isPresented: $store.showUpdate, arrowEdge: .bottom) { UpdateView(update: update, store: store) }
     }
@@ -437,6 +438,43 @@ private struct FolderDrop: DropDelegate {
         guard let url = store.dragging, let shot = store.shots.first(where: { $0.url == url }) else { return false }
         store.file(shot, into: folder)
         return true
+    }
+}
+
+/// A soft band of light that sweeps across a pill every few seconds, to catch the eye. Skipped
+/// with Reduce Motion, and it never takes clicks.
+struct LightSweep: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else {
+            content.keyframeAnimator(initialValue: -0.45, repeating: true) { view, position in
+                view.overlay { SweepBand(position: position) }
+            } keyframes: { _ in
+                CubicKeyframe(1.1, duration: 0.9)   // the sweep
+                LinearKeyframe(1.1, duration: 2.6)  // then a rest before the next one
+            }
+        }
+    }
+}
+
+/// The band itself, at `position` (0 is the pill's left edge, 1 its right).
+struct SweepBand: View {
+    let position: CGFloat
+
+    var body: some View {
+        GeometryReader { geo in
+            LinearGradient(colors: [.clear, .white.opacity(0.3), .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: geo.size.width * 0.45, height: geo.size.height * 3)
+                .rotationEffect(.degrees(20))
+                .offset(x: position * geo.size.width, y: -geo.size.height)
+        }
+        .clipShape(Capsule())
+        .blendMode(.plusLighter)
+        .allowsHitTesting(false)
     }
 }
 

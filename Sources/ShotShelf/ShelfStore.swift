@@ -72,7 +72,7 @@ final class ShelfStore: ObservableObject {
     @Published var searchSelection: URL?
     /// Whether typing goes to the search field (true) or the arrow keys drive the results (false).
     @Published var searchFocused = true
-    /// Up to four capture sizes, shown as pills under the header.
+    /// Up to 20 capture sizes, shown in the capture bar under the shelf.
     @Published private(set) var presets: [CapturePreset]
     /// The add/edit form for a preset, while it's open.
     @Published var presetEditor: PresetDraft?
@@ -728,6 +728,13 @@ final class ShelfStore: ObservableObject {
 
     private func shortcutHotKey(_ slot: ShortcutSlot) -> HotKey? {
         slot == .open ? openHotKey : searchHotKey
+    }
+
+    /// For `--render-bar`: `count` sample capture sizes, saving nothing.
+    func setPreviewPresets(_ count: Int) {
+        guard isPreview else { return }
+        let sizes = [(1280, 720), (1920, 1080), (1080, 1080), (800, 600), (1200, 630), (1080, 1350)]
+        presets = (0..<count).map { i in CapturePreset(width: sizes[i % sizes.count].0, height: sizes[i % sizes.count].1) }
     }
 
     /// For `--render --extras`: shows the update pill and sample presets, saving nothing.

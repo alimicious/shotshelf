@@ -13,7 +13,7 @@ struct CapturePreset: Codable, Identifiable, Equatable {
 
     var label: String { name.isEmpty ? "\(width) × \(height)" : name }
 
-    static let limit = 4
+    static let limit = 20
     static let suggestions = [(1280, 720), (1920, 1080), (1080, 1080), (800, 600)]
 }
 
@@ -106,18 +106,29 @@ struct CaptureBarView: View {
                 .buttonStyle(.plain)
                 .help("Save a screenshot size you can capture in one click")
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 2) {
-                        ForEach(Array(store.presets.enumerated()), id: \.element.id) { index, preset in
-                            if index > 0 { Divider().frame(height: 20) }
-                            PresetChip(preset: preset, store: store)
-                        }
-                    }
+                // All sizes in a row when they fit; otherwise a sideways scroll whose edges fade out,
+                // so it's clear there are more.
+                ViewThatFits(in: .horizontal) {
+                    chips
+                    ScrollView(.horizontal, showsIndicators: false) { chips.padding(.horizontal, 8) }
+                        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
+                                                     .init(color: .black, location: 0.92), .init(color: .clear, location: 1)],
+                                             startPoint: .leading, endPoint: .trailing))
                 }
             }
         }
         .padding(.leading, 18).padding(.trailing, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private var chips: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(store.presets.enumerated()), id: \.element.id) { index, preset in
+                if index > 0 { Divider().frame(height: 20) }
+                PresetChip(preset: preset, store: store)
+            }
+        }
+        .fixedSize()
     }
 }
 

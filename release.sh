@@ -40,7 +40,7 @@ A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up bi
 - **Smart names:** new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". You can turn this off in settings (the gear).
 - **Search** every screenshot by the words inside it, then drag results onto the shelf or click the eye to see them bigger.
 - **Small, Medium or Large** panel: bigger panels show bigger tiles and more of them.
-- **Capture sizes:** save up to four sizes in the Spotlight-style bar under the shelf, then click one to capture exactly that area.
+- **Capture sizes:** save up to 20 sizes in the Spotlight-style bar under the shelf, then click one to capture exactly that area.
 - **Tidy** sends unpinned shots from before today to the Trash, by hand or on a schedule.
 - A little pixel mascot snaps a photo in your menu bar whenever you take a screenshot.
 

@@ -83,7 +83,7 @@ final class StatusController: NSObject {
             }
             .store(in: &subscriptions)
 
-        // The + goes away once all four sizes are taken, and the capsule widens to fill its place.
+        // The + goes away once all 20 sizes are taken, and the capsule widens to fill its place.
         store.$presets.dropFirst()
             .sink { [weak self] _ in
                 DispatchQueue.main.async { MainActor.assumeIsolated { self?.layoutBar() } }
