@@ -27,9 +27,10 @@ gh release create "$TAG" "$ZIP" --target "$(git rev-parse HEAD)" --title "ShotSh
 A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up big with the six before it underneath: drag one into any app to share it, onto another shot to rearrange, or onto a folder chip to file it away.
 
 - **Copy the image or the text in it** (read on your Mac with Apple's Vision), Quick Look, pin, redact private bits, or send to the Trash.
-- **⌥⌘S** opens the shelf from anywhere. Inside, arrows move, Space previews, ⌘C copies, ⌫ trashes and Esc closes.
+- **⌥⌘S** opens the shelf from anywhere, and you can record your own shortcuts for it and for jumping straight to search. Inside, arrows move, Space previews, ⌘C copies, ⌫ trashes and Esc closes.
 - **Smart names:** new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". You can turn this off in settings (the gear).
-- **Search** every screenshot by the words inside it.
+- **Search** every screenshot by the words inside it, then drag results onto the shelf or click the eye to see them bigger.
+- **Small, Medium or Large** panel: bigger panels show bigger tiles and more of them.
 - **Tidy** sends unpinned shots from before today to the Trash, by hand or on a schedule.
 - A little pixel mascot snaps a photo in your menu bar whenever you take a screenshot.
 
