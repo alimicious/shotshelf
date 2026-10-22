@@ -13,16 +13,13 @@ struct ShelfView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            presetRow
             grid
             folderChips
             footer
         }
         .padding(16)
         .frame(width: store.panelSize.width)
-        // Show All opens beside the panel rather than over it, so its shots can be dragged onto the tiles.
-        .popover(isPresented: $store.showAll, attachmentAnchor: .rect(.bounds), arrowEdge: .leading) {
-            AllShotsView(store: store)
-        }
     }
 
     // MARK: - Header
@@ -32,20 +29,22 @@ struct ShelfView: View {
             Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
                 .frame(width: 34, height: 34)
                 .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+            // The small panel has no room beside the buttons, so its Update pill takes the subtitle's place.
+            let compact = store.panelSize == .small
             VStack(alignment: .leading, spacing: 1) {
-                Text("Screenshots").font(.headline)
-                Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text("Screenshots").font(.headline).lineLimit(1).minimumScaleFactor(0.8)
+                if compact, let update = store.availableUpdate {
+                    updatePill(update).controlSize(.small)
+                } else {
+                    Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
-            Spacer()
+            Spacer(minLength: 4)
+            if !compact, let update = store.availableUpdate {
+                updatePill(update)
+            }
             GlassEffectContainer(spacing: 8) {
                 HStack(spacing: 6) {
-                    if let update = store.availableUpdate {
-                        GlassIconButton(systemName: "arrow.down.circle.fill", help: "ShotShelf \(update.version) is available",
-                                        tint: terracotta) {
-                            store.showUpdate.toggle()
-                        }
-                        .popover(isPresented: $store.showUpdate, arrowEdge: .bottom) { UpdateView(update: update, store: store) }
-                    }
                     GlassIconButton(systemName: "square.grid.2x2", help: "Show all and search (⌘F)") {
                         store.showAll.toggle()
                     }
@@ -63,8 +62,55 @@ struct ShelfView: View {
         }
     }
 
+    /// Big and terracotta on purpose: an update should be hard to miss.
+    private func updatePill(_ update: AvailableUpdate) -> some View {
+        Button { store.showUpdate.toggle() } label: {
+            Label("Update", systemImage: "arrow.down.circle.fill").font(.callout.weight(.semibold))
+        }
+        .buttonStyle(.glassProminent).tint(terracotta)
+        .help("ShotShelf \(update.version) is available")
+        .popover(isPresented: $store.showUpdate, arrowEdge: .bottom) { UpdateView(update: update, store: store) }
+    }
+
     private var subtitle: String {
         "\(store.todayCount) today · \(store.shots.count) on \(store.folder.lastPathComponent)"
+    }
+
+    // MARK: - Capture presets
+
+    /// Up to four capture sizes: click one to place a frame of that size and capture it.
+    private var presetRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            GlassEffectContainer(spacing: 6) {
+                HStack(spacing: 6) {
+                    ForEach(store.presets) { preset in
+                        Button { store.capture(preset) } label: {
+                            Label(preset.label, systemImage: "viewfinder").font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.glass).controlSize(.small)
+                        .help("Capture a \(preset.width) × \(preset.height) area. Right-click to edit.")
+                        .contextMenu {
+                            Button("Edit…") { store.editPreset(preset) }
+                            Button("Delete", role: .destructive) { store.deletePreset(preset.id) }
+                        }
+                    }
+                    if store.presets.count < CapturePreset.limit {
+                        Button { store.newPreset() } label: {
+                            Label(store.presets.isEmpty ? "Add a capture size" : "Size", systemImage: "plus")
+                                .font(.caption.weight(.medium))
+                        }
+                        .buttonStyle(.glass).controlSize(.small)
+                        .help("Save a screenshot size you can capture in one click")
+                    }
+                }
+                .padding(.vertical, 3).padding(.horizontal, 1)
+            }
+        }
+        .frame(height: 32)
+        .popover(isPresented: Binding(get: { store.presetEditor != nil }, set: { if !$0 { store.presetEditor = nil } }),
+                 arrowEdge: .bottom) {
+            if let draft = store.presetEditor { PresetEditor(draft: draft, store: store) }
+        }
     }
 
     // MARK: - Grid

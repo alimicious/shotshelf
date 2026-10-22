@@ -15,6 +15,7 @@ enum Prefs {
     static let panelSize = "panelSize"        // PanelSize raw value
     static let autoUpdates = "autoUpdates"    // Bool, check GitHub for a newer version once a day
     static let lastUpdateCheck = "lastUpdateCheck"  // Double, when that last happened
+    static let capturePresets = "capturePresets"    // JSON [CapturePreset]
     static let smartNames = "smartNames"      // Bool, rename new shots from their text
     static let mascot = "mascot"              // Bool, mascot snaps a photo for new shots
 }
@@ -121,6 +122,7 @@ struct ShotShelfApp: App {
         if let i = args.firstIndex(of: "--size"), i + 1 < args.count, let size = PanelSize(rawValue: args[i + 1].capitalized) {
             store.panelSize = size
         }
+        if args.contains("--extras") { store.addPreviewExtras() }
         let renderer = ImageRenderer(content: ShelfView(store: store)
             .background(Color(nsColor: .windowBackgroundColor)))
         renderer.scale = 2
@@ -170,12 +172,14 @@ struct ShotShelfApp: App {
                 controller()?.store.openSearch()
                 after(1.5) {
                     print("after search shortcut: \(visibleWindows())")
-                    controller()?.close()
-                    let urls = (ShotScanner.scan(ShotScanner.folder) ?? []).map(\.url)
-                    AppDelegate.toggleQuickLook(urls, at: 0)
+                    // Quick Look from search should leave search (and the shelf) open.
+                    if let store = controller()?.store, let first = store.searchResults.first {
+                        store.quickLook(first, among: store.searchResults)
+                    }
                     after(1.5) {
                         let panel = QLPreviewPanel.shared()
                         print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
+                        print("with quick look open: \(visibleWindows())")
                         exit(0)
                     }
                 }

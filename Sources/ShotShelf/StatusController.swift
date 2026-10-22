@@ -11,6 +11,9 @@ final class StatusController: NSObject {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let panel: ShelfPanel
     private let hosting: NSHostingView<ShelfView>
+    /// Search lives in its own panel beside the shelf, so Quick Look and drags don't close it.
+    private let searchPanel: ShelfPanel
+    private let searchHosting: NSHostingView<AllShotsView>
     private var clickMonitor: Any?
     private var subscriptions: Set<AnyCancellable> = []
 
@@ -21,12 +24,18 @@ final class StatusController: NSObject {
         glass.cornerRadius = 24
         glass.contentView = hosting
         panel = ShelfPanel(contentView: glass, size: hosting.fittingSize)
+        searchHosting = NSHostingView(rootView: AllShotsView(store: store))
+        let searchGlass = NSGlassEffectView()
+        searchGlass.cornerRadius = 24
+        searchGlass.contentView = searchHosting
+        searchPanel = ShelfPanel(contentView: searchGlass, size: searchHosting.fittingSize)
         super.init()
 
         item.button?.target = self
         item.button?.action = #selector(toggle)
         item.button?.imagePosition = .imageLeading
         store.panelWindow = panel
+        store.searchWindow = searchPanel
         store.togglePanel = { [weak self] in self?.toggle() }
         store.closePanel = { [weak self] in self?.close() }
 
@@ -48,6 +57,29 @@ final class StatusController: NSObject {
                 }
             }
             .store(in: &subscriptions)
+
+        store.$showAll.dropFirst().removeDuplicates()
+            .sink { [weak self] show in
+                MainActor.assumeIsolated { show ? self?.showSearch() : self?.hideSearch() }
+            }
+            .store(in: &subscriptions)
+    }
+
+    /// Opens search beside the shelf: to its left, or its right when there's no room.
+    private func showSearch() {
+        if !panel.isVisible { show() }
+        let size = searchHosting.fittingSize
+        let visible = (panel.screen ?? NSScreen.main)?.visibleFrame ?? panel.frame
+        var x = panel.frame.minX - 10 - size.width
+        if x < visible.minX + 8 { x = panel.frame.maxX + 10 }
+        searchPanel.setFrame(NSRect(x: x, y: panel.frame.maxY - size.height, width: size.width, height: size.height),
+                             display: true)
+        searchPanel.makeKeyAndOrderFront(nil)
+    }
+
+    private func hideSearch() {
+        searchPanel.orderOut(nil)
+        if panel.isVisible { panel.makeKey() }
     }
 
     private func updateButton(frame: ShelfIcon.Frame, count: Int) {

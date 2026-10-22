@@ -6,7 +6,8 @@ A Liquid Glass menu bar shelf for your recent screenshots. Click the polaroid (o
 - **Keyboard**: arrows move, Space previews, ⌘C copies, T copies text, P pins, R redacts, ⌫ trashes, ⌘F searches, Esc closes.
 - **Redact** opens an editor where you drag boxes over private bits; it saves a pixelated copy next to the original.
 - **Smart names**: new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". Turn it off in Settings.
-- **Show all** (grid button or ⌘F) opens beside the panel, lists every screenshot and searches the text inside them. Click a shot's eye to see it bigger, or drag it onto one of the panel's tiles to put it on the shelf.
+- **Show all** (grid button or ⌘F) opens in its own panel beside the shelf, lists every screenshot and searches the text inside them. Press ↓ to move from the search field into the results, then use the arrow keys, Space to preview and the other shelf keys; typing carries on the search. Click a shot's eye to see it bigger, or drag it onto one of the shelf's tiles to put it there.
+- **Capture sizes**: save up to four sizes as pills under the header. Clicking one dims the screen like ⌘⇧5 with a frame of exactly that size; drag it into place and press Capture. This needs Screen Recording permission, which macOS asks for the first time (and may ask again after an update, since the app isn't notarized).
 - **Shortcuts**: record your own in Settings for opening the shelf (⌥⌘S by default) and for jumping straight to search.
 - **Sizes**: Small, Medium or Large in Settings. Bigger panels get bigger tiles and more of them (4, 7 or 13 shots).
 - **Tidy** moves unpinned shots from before today to the Trash; auto-tidy can do it on a schedule.
@@ -14,7 +15,7 @@ A Liquid Glass menu bar shelf for your recent screenshots. Click the polaroid (o
 
 It reads the folder macOS saves screenshots to (the Desktop unless you changed it), top level only, and goes by the tag macOS puts on every screenshot, so other images are never touched. Nothing is deleted outright; it all goes to the Trash. Everything stays on your Mac: the only network request is a daily check of GitHub for a newer version, which you can turn off in Settings.
 
-**Updates** install from inside the app: when a new version is out, an update button appears in the panel's header, and one click downloads it, checks it, and relaunches into it. Each release zip is signed, and the app only installs zips that match the public key built into it.
+**Updates** install from inside the app: when a new version is out, an **Update** pill appears in the panel's header, and one click downloads it, checks it, and relaunches into it. Each release zip is signed, and the app only installs zips that match the public key built into it.
 
 ## Install
 

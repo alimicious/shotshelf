@@ -64,8 +64,18 @@ final class ShelfStore: ObservableObject {
     @Published private(set) var availableUpdate: AvailableUpdate?
     @Published private(set) var updateStatus: UpdateStatus = .idle
     @Published var showUpdate = false
-    @Published var showAll = false
+    @Published var showAll = false {
+        didSet { if showAll && !oldValue { searchFocused = true } }
+    }
     @Published var query = ""
+    /// The selected shot in search, moved by the arrow keys and the pointer.
+    @Published var searchSelection: URL?
+    /// Whether typing goes to the search field (true) or the arrow keys drive the results (false).
+    @Published var searchFocused = true
+    /// Up to four capture sizes, shown as pills under the header.
+    @Published private(set) var presets: [CapturePreset]
+    /// The add/edit form for a preset, while it's open.
+    @Published var presetEditor: PresetDraft?
 
     let folder = ShotScanner.folder
     let mascot = MascotAnimator()
@@ -73,11 +83,14 @@ final class ShelfStore: ObservableObject {
     let isPreview: Bool
     /// The panel's window, so keyboard shortcuts only act while it's the one in front.
     weak var panelWindow: NSWindow?
+    /// The search panel beside it, which gets its own keys.
+    weak var searchWindow: NSWindow?
     /// Set by the status item, which owns the panel.
     var togglePanel: (() -> Void)?
     var closePanel: (() -> Void)?
 
     private var watcher: FolderWatcher?
+    private var captureOverlay: CaptureOverlay?
     private var openHotKey: HotKey?
     private var searchHotKey: HotKey?
     private var redactWindow: NSWindow?
@@ -96,6 +109,7 @@ final class ShelfStore: ObservableObject {
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
+        presets = Self.loadPresets()
         self.shots = Self.arranged(shots)
         freshSince = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: Prefs.lastSeen))
         for shot in self.shots.prefix(panelSize.slots) { thumbnails[shot.url] = ShotScanner.thumbnail(shot.url) }
@@ -115,6 +129,7 @@ final class ShelfStore: ObservableObject {
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
+        presets = Self.loadPresets()
         // On first launch, count only shots taken from now on as new.
         if defaults.double(forKey: Prefs.lastSeen) == 0 { defaults.set(Date().timeIntervalSince1970, forKey: Prefs.lastSeen) }
         watcher = FolderWatcher(folder) { [weak self] in
@@ -129,6 +144,7 @@ final class ShelfStore: ObservableObject {
                     return true
                 }
                 // Leave typing in text fields (like search) alone.
+                if event.window === self.searchWindow { return self.handleSearchKey(event) }
                 guard event.window === self.panelWindow, !(event.window?.firstResponder is NSText) else { return false }
                 return self.handleKey(event)
             }
@@ -537,15 +553,81 @@ final class ShelfStore: ObservableObject {
             hovered = shots[next].url
             return true
         }
-        guard let index else { return false }
-        let shot = shots[index]
+        // Space with nothing selected previews the newest shot.
+        guard let shot = index.map({ shots[$0] }) ?? (event.keyCode == 49 ? shots.first : nil) else { return false }
+        return act(on: shot, in: self.shots, event: event) { self.hovered = $0 }
+    }
+
+    /// Keys for the search panel. In the search field everything is typing, except Down or Return,
+    /// which move into the results. There, arrows move, Up from the top row goes back to the
+    /// field, the shot keys work as on the shelf, and typing a letter carries on the search.
+    private func handleSearchKey(_ event: NSEvent) -> Bool {
+        let results = searchResults
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let index = searchSelection.flatMap { url in results.firstIndex { $0.url == url } }
+        let inField = event.window?.firstResponder is NSText
+
+        if event.keyCode == 53 {  // Escape: clear the search first, then close
+            if inField, !query.isEmpty { query = "" } else { showAll = false }
+            return true
+        }
+        if event.charactersIgnoringModifiers?.lowercased() == "f", mods == .command {
+            searchFocused = true
+            return true
+        }
+        if inField {
+            guard [125, 36].contains(event.keyCode), !results.isEmpty else { return false }
+            searchSelection = results[index ?? 0].url
+            searchFocused = false
+            return true
+        }
+        guard !results.isEmpty else { return false }
+        let columns = 3
+        switch event.keyCode {
+        case 123, 124, 125, 126:
+            guard let i = index else {
+                searchSelection = results[0].url
+                return true
+            }
+            let last = results.count - 1
+            switch event.keyCode {
+            case 123: searchSelection = results[max(i - 1, 0)].url
+            case 124: searchSelection = results[min(i + 1, last)].url
+            case 125 where i / columns < last / columns: searchSelection = results[min(i + columns, last)].url
+            case 126 where i < columns: searchFocused = true
+            case 126: searchSelection = results[i - columns].url
+            default: break
+            }
+            return true
+        default:
+            if let shot = index.map({ results[$0] }) ?? (event.keyCode == 49 ? results.first : nil),
+               act(on: shot, in: results, event: event, select: { self.searchSelection = $0 }) {
+                return true
+            }
+            // Anything else typed goes back into the search.
+            if mods.isDisjoint(with: [.command, .control]), let typed = event.characters,
+               !typed.isEmpty, !typed.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+                query += typed
+                searchFocused = true
+                return true
+            }
+            return false
+        }
+    }
+
+    /// The keys that act on one shot, shared by the shelf and search: Space previews (stepping
+    /// through `list`), Return opens, Delete trashes, ⌘C copies, T copies text, P pins, R redacts.
+    private func act(on shot: Shot, in list: [Shot], event: NSEvent, select: (URL?) -> Void) -> Bool {
+        let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.charactersIgnoringModifiers?.lowercased()
         switch (event.keyCode, mods, key) {
-        case (49, [], _): quickLook(shot)                                  // Space
+        case (49, [], _): quickLook(shot, among: list)                    // Space
         case (36, [], _): open(shot)                                       // Return
         case (51, [], _), (51, .command, _), (117, [], _):                 // Delete
             // Keep a selection so you can tap through and trash several in a row.
-            let rest = shots.filter { $0 != shot }
-            hovered = rest.indices.contains(index) ? rest[index].url : rest.last?.url
+            let rest = list.filter { $0 != shot }
+            let i = list.firstIndex(of: shot) ?? 0
+            select(rest.indices.contains(i) ? rest[i].url : rest.last?.url)
             trash(shot)
         case (_, .command, "c"): copy(shot)
         case (_, [.command, .shift], "c"), (_, [], "t"): copyText(shot)
@@ -585,16 +667,11 @@ final class ShelfStore: ObservableObject {
         searchHotKey = searchShortcut.flatMap { HotKey($0) { [weak self] in MainActor.assumeIsolated { self?.openSearch() } } }
     }
 
-    /// Opens the shelf straight into Show All with the search field ready; pressing it again closes.
+    /// Opens the shelf straight into search with the field ready; pressing it again closes both.
     func openSearch() {
         if panelWindow?.isVisible == true, showAll {
             closePanel?()
-            return
-        }
-        if panelWindow?.isVisible != true { togglePanel?() }
-        // The popover needs the panel on screen to attach to.
-        Task {
-            try? await Task.sleep(for: .milliseconds(60))
+        } else {
             showAll = true
         }
     }
@@ -652,6 +729,85 @@ final class ShelfStore: ObservableObject {
         slot == .open ? openHotKey : searchHotKey
     }
 
+    /// For `--render --extras`: shows the update pill and sample presets, saving nothing.
+    func addPreviewExtras() {
+        guard isPreview, let page = URL(string: "https://github.com/alimicious/shotshelf/releases") else { return }
+        availableUpdate = AvailableUpdate(version: "9.9.9", pageURL: page, zipURL: page, signatureURL: page)
+        if presets.isEmpty { presets = [CapturePreset(width: 1280, height: 720), CapturePreset(width: 1080, height: 1080, name: "Square")] }
+    }
+
+    // MARK: - Capture presets
+
+    func newPreset() {
+        presetEditor = PresetDraft()
+    }
+
+    func editPreset(_ preset: CapturePreset) {
+        presetEditor = PresetDraft(preset)
+    }
+
+    func savePreset(_ preset: CapturePreset) {
+        if let i = presets.firstIndex(where: { $0.id == preset.id }) {
+            presets[i] = preset
+        } else if presets.count < CapturePreset.limit {
+            presets.append(preset)
+        }
+        savePresets()
+        presetEditor = nil
+    }
+
+    func deletePreset(_ id: UUID) {
+        presets.removeAll { $0.id == id }
+        savePresets()
+        presetEditor = nil
+    }
+
+    /// Shows a frame of the preset's size to drag into place, then captures exactly that area.
+    func capture(_ preset: CapturePreset) {
+        // screencapture runs on ShotShelf's behalf, so it needs ShotShelf's Screen Recording permission;
+        // without it the image would only show the desktop.
+        guard CGPreflightScreenCaptureAccess() else {
+            CGRequestScreenCaptureAccess()
+            showToast("Allow ShotShelf in Screen Recording, then try again", symbol: "rectangle.dashed.badge.record")
+            if let settings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                NSWorkspace.shared.open(settings)
+            }
+            return
+        }
+        closePanel?()
+        let overlay = CaptureOverlay(preset: preset) { [weak self] rect in self?.takeScreenshot(of: rect) }
+        captureOverlay = overlay
+        overlay.show()
+    }
+
+    /// Captures `rect` (global, top-left origin) into the screenshot folder, named and tagged
+    /// like a macOS screenshot so it lands on the shelf like any other.
+    private func takeScreenshot(of rect: CGRect) {
+        captureOverlay = nil
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let dest = ShotScanner.uniqueURL(in: folder, name: "Screenshot \(formatter.string(from: Date()))", ext: "png")
+        let area = "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
+        Task {
+            // Give the overlay a moment to leave the screen so it isn't in the shot.
+            try? await Task.sleep(for: .milliseconds(150))
+            let ok = await Task.detached { () -> Bool in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                process.arguments = ["-R", area, dest.path]
+                guard (try? process.run()) != nil else { return false }
+                process.waitUntilExit()
+                return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: dest.path)
+            }.value
+            guard ok else {
+                showToast("Couldn't take the screenshot", symbol: "exclamationmark.triangle")
+                return
+            }
+            ShotScanner.tagAsScreenshot(dest)
+            await refresh()
+        }
+    }
+
     // MARK: - Updates
 
     /// At most once a day, and only if automatic checks are on.
@@ -707,6 +863,15 @@ final class ShelfStore: ObservableObject {
     }
 
     // MARK: - Persistence
+
+    private static func loadPresets() -> [CapturePreset] {
+        guard let data = UserDefaults.standard.data(forKey: Prefs.capturePresets) else { return [] }
+        return (try? JSONDecoder().decode([CapturePreset].self, from: data)) ?? []
+    }
+
+    private func savePresets() {
+        UserDefaults.standard.set(try? JSONEncoder().encode(presets), forKey: Prefs.capturePresets)
+    }
 
     private static func loadPanelSize() -> PanelSize {
         PanelSize(rawValue: UserDefaults.standard.string(forKey: Prefs.panelSize) ?? "") ?? .medium

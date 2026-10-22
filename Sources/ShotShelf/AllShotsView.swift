@@ -3,8 +3,9 @@ import SwiftUI
 private let terracotta = Color(nsColor: ShelfIcon.terracotta)
 private let miniSize = CGSize(width: 100, height: 64)
 
-/// Every screenshot in the folder, searchable by name and by the text inside it. Shots can be
-/// dragged from here onto the panel's tiles to put them there.
+/// Every screenshot in the folder, searchable by name and by the text inside it, in its own panel
+/// beside the shelf. Shots can be dragged from here onto the shelf's tiles to put them there, and
+/// the arrow keys, Space and the other shelf keys work on the selected one.
 struct AllShotsView: View {
     @ObservedObject var store: ShelfStore
     @FocusState private var searchFocused: Bool
@@ -25,11 +26,17 @@ struct AllShotsView: View {
             .padding(.horizontal, 12).padding(.vertical, 8)
             .glassEffect(.regular, in: .capsule)
 
-            ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(miniSize.width), spacing: 8), count: 3), spacing: 10) {
-                    ForEach(results) { MiniCell(shot: $0, results: results, store: store) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(miniSize.width), spacing: 8), count: 3), spacing: 10) {
+                        ForEach(results) { MiniCell(shot: $0, results: results, store: store) }
+                    }
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
+                .onChange(of: store.searchSelection) { _, selected in
+                    // Keep the keyboard selection in view.
+                    if let selected { withAnimation(.snappy) { proxy.scrollTo(selected) } }
+                }
             }
             .frame(height: 380)
             .overlay {
@@ -39,11 +46,20 @@ struct AllShotsView: View {
                 }
             }
 
-            Text(status).font(.caption2).foregroundStyle(.secondary)
+            HStack {
+                Text(status)
+                Spacer()
+                Text("↑↓←→ move · Space previews · Esc closes")
+            }
+            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
         }
         .padding(14)
         .frame(width: 352)
-        .onAppear { searchFocused = true }
+        // The store decides where typing goes (the keys move it between field and results);
+        // this keeps the field's real focus in step both ways.
+        .onAppear { searchFocused = store.searchFocused }
+        .onChange(of: store.searchFocused) { _, focused in searchFocused = focused }
+        .onChange(of: searchFocused) { _, focused in if store.searchFocused != focused { store.searchFocused = focused } }
     }
 
     private var status: String {
@@ -58,7 +74,8 @@ private struct MiniCell: View {
     let results: [Shot]
     @ObservedObject var store: ShelfStore
 
-    private var isHovered: Bool { store.hovered == shot.url }
+    /// Selected by the arrow keys or the pointer; the two share one selection.
+    private var isHovered: Bool { store.searchSelection == shot.url }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -104,7 +121,7 @@ private struct MiniCell: View {
         .contentShape(Rectangle())
         .onAppear { store.requestMini(shot.url) }
         .onHover { inside in
-            if inside { store.hovered = shot.url } else if isHovered { store.hovered = nil }
+            if inside { store.searchSelection = shot.url }
         }
         .onTapGesture(count: 2) { store.open(shot) }
         .onDrag {
