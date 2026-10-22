@@ -350,10 +350,12 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    /// Previews `shot`; the arrow keys in Quick Look then step through `list` (the whole shelf by default).
-    func quickLook(_ shot: Shot, among list: [Shot]? = nil) {
+    /// Previews `shot`. The arrow keys in Quick Look then step through `list` (the whole shelf by
+    /// default), and `follow` moves the highlight along with them (the shelf's, by default).
+    func quickLook(_ shot: Shot, among list: [Shot]? = nil, follow: ((URL) -> Void)? = nil) {
         let list = list ?? shots
-        AppDelegate.toggleQuickLook(list.map(\.url), at: list.firstIndex(of: shot) ?? 0)
+        AppDelegate.toggleQuickLook(list.map(\.url), at: list.firstIndex(of: shot) ?? 0,
+                                    follow: follow ?? { [weak self] in self?.hovered = $0 })
     }
 
     func reveal(_ shot: Shot) {
@@ -618,11 +620,11 @@ final class ShelfStore: ObservableObject {
 
     /// The keys that act on one shot, shared by the shelf and search: Space previews (stepping
     /// through `list`), Return opens, Delete trashes, ⌘C copies, T copies text, P pins, R redacts.
-    private func act(on shot: Shot, in list: [Shot], event: NSEvent, select: (URL?) -> Void) -> Bool {
+    private func act(on shot: Shot, in list: [Shot], event: NSEvent, select: @escaping (URL?) -> Void) -> Bool {
         let mods = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased()
         switch (event.keyCode, mods, key) {
-        case (49, [], _): quickLook(shot, among: list)                    // Space
+        case (49, [], _): quickLook(shot, among: list, follow: { select($0) })  // Space
         case (36, [], _): open(shot)                                       // Return
         case (51, [], _), (51, .command, _), (117, [], _):                 // Delete
             // Keep a selection so you can tap through and trash several in a row.

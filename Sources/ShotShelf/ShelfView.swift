@@ -376,11 +376,19 @@ private struct RearrangeDrop: DropDelegate {
 struct ShotMenu: View {
     let shot: Shot
     @ObservedObject var store: ShelfStore
+    /// Set when the menu belongs to a search result, so Quick Look steps through the results.
+    var results: [Shot]? = nil
 
     var body: some View {
         Button("Copy Image", systemImage: "doc.on.doc") { store.copy(shot) }
         Button("Copy Text", systemImage: "text.viewfinder") { store.copyText(shot) }
-        Button("Quick Look", systemImage: "eye") { store.quickLook(shot) }
+        Button("Quick Look", systemImage: "eye") {
+            if let results {
+                store.quickLook(shot, among: results, follow: { store.searchSelection = $0 })
+            } else {
+                store.quickLook(shot)
+            }
+        }
         Divider()
         Button(store.isPinned(shot) ? "Unpin" : "Pin", systemImage: store.isPinned(shot) ? "pin.slash" : "pin") {
             store.togglePin(shot)

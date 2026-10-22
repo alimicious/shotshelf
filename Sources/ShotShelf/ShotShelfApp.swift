@@ -216,13 +216,29 @@ struct ShotShelfApp: App {
                             print("after search shortcut: \(visibleWindows())")
                             // Quick Look from search should leave search (and the shelf) open.
                             if let store = controller()?.store, let first = store.searchResults.first {
-                                store.quickLook(first, among: store.searchResults)
+                                store.quickLook(first, among: store.searchResults, follow: { store.searchSelection = $0 })
                             }
                             after(1.5) {
                                 let panel = QLPreviewPanel.shared()
                                 print("quick look visible: \(panel?.isVisible ?? false), items: \(panel?.dataSource?.numberOfPreviewItems(in: panel) ?? -1)")
                                 print("with quick look open: \(visibleWindows())")
-                                exit(0)
+                                // Step Quick Look on, as its arrow keys would; search's highlight should follow.
+                                guard let store = controller()?.store, store.searchResults.count > 2 else { exit(0) }
+                                panel?.currentPreviewItemIndex = 2
+                                after(0.5) {
+                                    let followed = store.searchSelection == store.searchResults[2].url
+                                    print("highlight followed quick look to item 3: \(followed)")
+                                    // Close, then reopen on another shot: it should already hold that
+                                    // shot when it appears, not the last one it showed.
+                                    panel?.orderOut(nil)
+                                    after(0.5) {
+                                        let target = store.searchResults[1]
+                                        store.quickLook(target, among: store.searchResults, follow: { store.searchSelection = $0 })
+                                        let held = AppDelegate.itemWhenShown
+                                        print("reopened on item 2; held the right shot as it appeared: \(held == target.url) (was item 3 last time)")
+                                        exit(0)
+                                    }
+                                }
                             }
                         }
                     }

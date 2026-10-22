@@ -138,6 +138,12 @@ enum PanelSize: String, CaseIterable, Identifiable {
 final class AppDelegate: NSObject, NSApplicationDelegate, QLPreviewPanelDataSource {
     static private(set) var shared: AppDelegate?
     private var items: [URL] = []
+    /// Moves the shelf's or search's highlight to the shot Quick Look is showing.
+    private var follow: ((URL) -> Void)?
+    private var followedIndex = -1
+    private var followTimer: Timer?
+    /// For `--selftest`: the item Quick Look held at the moment it went on screen.
+    static private(set) var itemWhenShown: URL?
     private(set) var statusController: StatusController?
 
     override init() {
@@ -149,23 +155,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QLPreviewPanelDataSour
         statusController = StatusController(store: ShelfStore())
     }
 
-    @MainActor static func toggleQuickLook(_ urls: [URL], at index: Int) {
+    @MainActor static func toggleQuickLook(_ urls: [URL], at index: Int, follow: ((URL) -> Void)? = nil) {
         guard let panel = QLPreviewPanel.shared(), let delegate = shared else { return }
         if panel.isVisible {
             panel.orderOut(nil)
             return
         }
+        delegate.follow = follow
+        delegate.followedIndex = index
         delegate.items = urls
-        NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-        // In case Quick Look didn't find us on the responder chain (no key window, say).
-        if panel.dataSource == nil { panel.dataSource = delegate }
+        // Load the right shot before the panel shows. Showing it first flashed whatever it showed
+        // last time for a moment, until the new item arrived.
+        panel.dataSource = delegate
         panel.reloadData()
         panel.currentPreviewItemIndex = index
+        NSApp.activate()
+        panel.makeKeyAndOrderFront(nil)
+        itemWhenShown = panel.currentPreviewItem as? URL
+        // Taking control on the way in can reset the item, so make sure it's still the one asked for.
+        if panel.currentPreviewItemIndex != index { panel.currentPreviewItemIndex = index }
+        delegate.startFollowing()
+    }
+
+    /// Quick Look has no callback for stepping to another item, so this checks a few times a second
+    /// while it's open and passes any change on.
+    @MainActor private func startFollowing() {
+        followTimer?.invalidate()
+        followTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            MainActor.assumeIsolated { AppDelegate.shared?.checkFollowedItem() }
+        }
+    }
+
+    @MainActor private func checkFollowedItem() {
+        guard let panel = QLPreviewPanel.shared(), panel.isVisible else {
+            followTimer?.invalidate()
+            followTimer = nil
+            return
+        }
+        let index = panel.currentPreviewItemIndex
+        guard index != followedIndex, items.indices.contains(index) else { return }
+        followedIndex = index
+        follow?(items[index])
     }
 
     override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { true }
-    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = self }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) {
+        // Already set up by toggleQuickLook; setting it again would reload and reset the item.
+        if panel.dataSource !== self { panel.dataSource = self }
+    }
     override func endPreviewPanelControl(_ panel: QLPreviewPanel!) { panel.dataSource = nil }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { items.count }

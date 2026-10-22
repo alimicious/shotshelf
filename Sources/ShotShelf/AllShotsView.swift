@@ -32,6 +32,9 @@ struct AllShotsView: View {
                         ForEach(results) { MiniCell(shot: $0, results: results, store: store) }
                     }
                     .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, minHeight: 372, alignment: .top)
+                    // Clicking empty space also takes the keys from the search field.
+                    .background { Color.clear.contentShape(Rectangle()).onTapGesture { store.searchFocused = false } }
                 }
                 .onChange(of: store.searchSelection) { _, selected in
                     // Keep the keyboard selection in view.
@@ -101,7 +104,7 @@ private struct MiniCell: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                Button { store.quickLook(shot, among: results) } label: {
+                Button { store.quickLook(shot, among: results, follow: { store.searchSelection = $0 }) } label: {
                     Image(systemName: "eye").font(.system(size: 9, weight: .semibold))
                         .frame(width: 20, height: 20).contentShape(Circle())
                 }
@@ -124,12 +127,18 @@ private struct MiniCell: View {
             if inside { store.searchSelection = shot.url }
         }
         .onTapGesture(count: 2) { store.open(shot) }
+        // A click selects the shot and takes the keys from the search field, so the arrows and
+        // Space work straight away.
+        .simultaneousGesture(TapGesture().onEnded {
+            store.searchSelection = shot.url
+            store.searchFocused = false
+        })
         .onDrag {
             // Lets the panel's tiles take the drop and put this shot in their spot.
             store.dragging = shot.url
             return NSItemProvider(contentsOf: shot.url) ?? NSItemProvider()
         }
-        .contextMenu { ShotMenu(shot: shot, store: store) }
+        .contextMenu { ShotMenu(shot: shot, store: store, results: results) }
         .help("\(shot.date.formatted(date: .abbreviated, time: .shortened)) · drag onto a tile to put it on the shelf, double-click to open")
     }
 }

@@ -57,7 +57,8 @@ final class StatusController: NSObject {
         super.init()
 
         item.button?.target = self
-        item.button?.action = #selector(toggle)
+        item.button?.action = #selector(statusItemClicked)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
         item.button?.imagePosition = .imageLeading
         store.panelWindow = panel
         store.searchWindow = searchPanel
@@ -163,6 +164,32 @@ final class StatusController: NSObject {
     var barSummary: String {
         let c = barCircle.frame
         return "window \(Int(bar.frame.width))×\(Int(bar.frame.height)), + glass \(Int(c.width))×\(Int(c.height)) at (\(Int(c.minX)),\(Int(c.minY))), key=\(bar.isKeyWindow)"
+    }
+
+    /// Left-click opens or closes the shelf; right-click (or Control-click) shows a small menu with Quit.
+    @objc private func statusItemClicked() {
+        guard let event = NSApp.currentEvent,
+              event.type == .rightMouseUp || event.modifierFlags.contains(.control) else {
+            toggle()
+            return
+        }
+        showStatusMenu()
+    }
+
+    private func showStatusMenu() {
+        guard let button = item.button else { return }
+        close()
+        let menu = NSMenu()
+        let version = NSMenuItem(title: "ShotShelf \(Updater.currentVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit ShotShelf", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
+        menu.addItem(quit)
+        button.highlight(true)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+        button.highlight(false)
     }
 
     @objc func toggle() {
