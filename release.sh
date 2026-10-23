@@ -44,7 +44,11 @@ A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up bi
 - **Mark up** with arrows, boxes, highlights and text, or pixelate private bits, and save a copy.
 - **Float a shot on screen** above your other windows, to refer to while you work.
 - **Links, email addresses and QR codes** in a shot get a button to open or copy them.
-- **Select several** with ⌘-click to copy, share, file, drag or trash them together.
+- **Select several** with ⌘-click to copy, share, file, combine, drag or trash them together.
+- **A pop-up after each capture** with the shot and its quick actions, right under the menu bar.
+- **Redact private info** in one click, frame shots on a gradient for sharing, lift a photo's subject, and translate a shot's text, all on your Mac.
+- **Screen recordings** on the shelf too: trim them, or save them as GIFs.
+- **Tidy** also catches near-duplicate shots, and the capture bar grabs a window, the same area again, or waits 3 seconds first.
 - **⌥⌘S** opens the shelf from anywhere, and you can record your own shortcuts for it and for jumping straight to search. Inside, arrows move, Space previews, ⌘C copies, ⌫ trashes, ⌘Z puts back and Esc closes.
 - **Smart names:** new screenshots are renamed from their text and the app you were in, like "Xcode – Build Failed 20.02.png". You can turn this off in settings (the gear).
 - **Search** every screenshot by the words inside it, then drag results onto the shelf or click the eye to see them bigger.

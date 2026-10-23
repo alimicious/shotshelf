@@ -1,3 +1,5 @@
+import AVFoundation
+import Carbon.HIToolbox
 import CryptoKit
 import Quartz
 import SwiftUI
@@ -21,6 +23,12 @@ enum Prefs {
     static let iconAnimation = "mascot"       // Bool, animate the menu bar icon for new shots (stored under its old name)
     static let welcomed = "welcomed"          // Bool, the first-launch card has been dismissed
     static let markupTool = "markupTool"      // MarkTool raw value, the last one used
+    static let markupBackdrop = "markupBackdrop"  // Backdrop raw value, the last background picked
+    static let copyNewestShortcut = "copyNewestShortcut"          // JSON Shortcut, or null
+    static let copyNewestTextShortcut = "copyNewestTextShortcut"
+    static let floatNewestShortcut = "floatNewestShortcut"
+    static let capturePopup = "capturePopup"  // Bool, show the pop-up after each capture
+    static let captureTimer = "captureTimer"  // Bool, captures wait three seconds
 }
 
 @main
@@ -65,12 +73,38 @@ struct ShotShelfApp: App {
             }
             exit(0)
         }
+        if let i = args.firstIndex(of: "--private"), i + 1 < args.count {
+            // What Redact Private Info would hide in a shot.
+            let start = Date()
+            let areas = ShotTools.privateAreas(URL(fileURLWithPath: args[i + 1]))
+            print("\(areas.count) private details in \(String(format: "%.1f", Date().timeIntervalSince(start)))s")
+            for area in areas { print("  x \(String(format: "%.2f", area.minX)) y \(String(format: "%.2f", area.minY)) w \(String(format: "%.2f", area.width))") }
+            exit(0)
+        }
+        if args.contains("--fingerprints") {
+            // How alike each pair of same-size shots looks, to tune what counts as a duplicate.
+            let prints = (ShotScanner.scan(ShotScanner.folder) ?? []).filter { !$0.isVideo }.compactMap { shot in
+                ShotTools.fingerprint(shot.url).map { (shot.url.lastPathComponent, $0) }
+            }
+            for i in prints.indices {
+                for j in prints.indices where j > i {
+                    guard let d = ShotTools.distance(prints[i].1, prints[j].1) else { continue }
+                    print(String(format: "%.3f", d), d < ShotTools.duplicateDistance ? "duplicate" : "different",
+                          prints[i].0, "|", prints[j].0)
+                }
+            }
+            exit(0)
+        }
         if let i = args.firstIndex(of: "--render-markup"), i + 2 < args.count {
             Self.renderMarkup(args[i + 1], to: args[i + 2])
             exit(0)
         }
         if let i = args.firstIndex(of: "--render-icons"), i + 1 < args.count {
             Self.renderIcons(to: args[i + 1])
+            exit(0)
+        }
+        if let i = args.firstIndex(of: "--render-orb"), i + 1 < args.count {
+            Self.renderOrb(to: args[i + 1])
             exit(0)
         }
         if let i = args.firstIndex(of: "--render-bar"), i + 1 < args.count {
@@ -198,6 +232,29 @@ struct ShotShelfApp: App {
             }
         })
         renderer.scale = 1
+        if let tiff = renderer.nsImage?.tiffRepresentation,
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    /// The orb big at four moments of its drift (seconds apart), and at the sizes the app uses,
+    /// on light and dark.
+    @MainActor private static func renderOrb(to path: String) {
+        let renderer = ImageRenderer(content: VStack(spacing: 0) {
+            ForEach([Color(white: 0.96), Color(white: 0.12)], id: \.self) { bg in
+                HStack(spacing: 24) {
+                    ForEach([0.0, 4, 8, 12], id: \.self) { t in OrbMark(size: 180, time: t) }
+                    VStack(spacing: 16) {
+                        OrbMark(size: 88, time: 0)
+                        OrbMark(size: 52, time: 0)
+                        OrbMark(size: 34, time: 0)
+                    }
+                }
+                .padding(28).background(bg)
+            }
+        })
+        renderer.scale = 2
         if let tiff = renderer.nsImage?.tiffRepresentation,
            let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
             try? png.write(to: URL(fileURLWithPath: path))
@@ -357,7 +414,8 @@ struct ShotShelfApp: App {
             await pause(1)
             print("after undo: \(two.filter(exists).count) of 2 back")
 
-            store.float(store.shots[0])
+            let still = store.shots.filter { !$0.isVideo }
+            store.float(still[0])
             await pause(1)
             snapshot(store.floaterWindows.first, "floating")
             for window in store.floaterWindows {
@@ -367,12 +425,110 @@ struct ShotShelfApp: App {
             await pause(0.5)
             print("floating after close: \(store.floaterWindows.count)")
 
-            store.markup(store.shots[0])
+            store.markup(still[0])
             await pause(1)
             let markup = NSApp.windows.filter { $0.isVisible && $0.title.hasPrefix("Markup") }
             snapshot(markup.first, "markup")
             print("markup editor: \(markup.map { "\($0.title) \(Int($0.frame.width))×\(Int($0.frame.height))" })")
             markup.forEach { $0.close() }
+            let sample = { (time: String) -> Shot? in store.shots.first { $0.url.lastPathComponent.contains(time) } }
+            let support = ShotScanner.folder.appendingPathComponent(".ShotShelf")
+
+            // Redact Private Info, and a background.
+            if let account = sample("08.30.00"), let model = MarkupModel(shot: account) {
+                model.redactPrivateInfo()
+                await pause(0.5)
+                for _ in 0..<160 where model.findingPrivate { await pause(0.25) }
+                print("redact private info: \(model.marks.count) redactions, notice “\(model.notice ?? "-")”")
+                model.backdrop = .ocean
+                try? model.render()?.write(to: support.appendingPathComponent("redacted-framed.png"))
+            }
+
+            // Duplicates, combining, the subject.
+            print("duplicates: \(store.duplicates.map(\.url.lastPathComponent)), tidy offers \(store.tidyCandidates.count) (\(store.tidyDuplicateCount) as duplicates)")
+            if let a = sample("08.40.00"), let b = sample("08.50.00") {
+                let before = Set(store.shots.map(\.url))
+                store.combine([a, b], stacked: false)
+                await pause(2)
+                if let made = store.shots.first(where: { !before.contains($0.url) }), let image = ShotTools.cgImage(made.url) {
+                    print("combined: \(made.url.lastPathComponent) \(image.width)×\(image.height)")
+                    try? FileManager.default.removeItem(at: made.url)
+                }
+            }
+            if let ball = sample("08.55.00"), let text = sample("09.10.00") {
+                let lifted = await Task.detached { (ShotTools.subject(ball.url), ShotTools.subject(text.url)) }.value
+                print("subject from the ball: \(lifted.0.flatMap { NSImage(data: $0)?.size }.map { "\(Int($0.width))×\(Int($0.height))" } ?? "none"), from text: \(lifted.1 == nil ? "none" : "some")")
+            }
+
+            // Translate opens the system popover with the shot's text.
+            if let notes = sample("09.00.00") {
+                store.translate(notes)
+                await pause(1.5)
+                print("translate: showing \(store.showTranslation), \(store.translation.split(separator: "\n").count) lines")
+                store.showTranslation = false
+            }
+
+            // Shortcuts that act on the newest shot.
+            let combo = Shortcut(keyCode: UInt32(kVK_F12), modifiers: UInt32(controlKey | optionKey | cmdKey), display: "⌃⌥⌘F12")
+            store.setShortcut(combo, for: .floatNewest)
+            print("float newest shortcut registered: \(store.isRegistered(.floatNewest))")
+            controller.close()
+            store.perform(.floatNewest)
+            await pause(1)
+            print("floated newest: \(store.floatingShots.map { $0.window.title.isEmpty ? "1 window" : $0.window.title })")
+            store.floatingShots.forEach { $0.window.close() }
+            store.setShortcut(nil, for: .floatNewest)
+            if let notes = sample("09.00.00") {
+                store.float(notes)
+                await pause(1)
+                if let floater = store.floatingShots.first {
+                    floater.model.liveText = true
+                    await pause(4)
+                    print("Live Text: analysed \(floater.model.analysis != nil), found text \(floater.model.analysis?.hasResults(for: .text) ?? false)")
+                    snapshot(floater.window, "livetext")
+                    floater.window.close()
+                }
+            }
+
+            // A new screenshot while the shelf is closed brings up the pop-up.
+            await pause(0.5)
+            if let source = sample("09.10.00") {
+                // Written afresh (a copy would keep the old creation date, and only new shots pop up).
+                let fresh = ShotScanner.folder.appendingPathComponent("Screenshot 2026-10-22 at 23.59.00.png")
+                try? FileManager.default.removeItem(at: fresh)
+                try? Data(contentsOf: source.url).write(to: fresh)
+                ShotScanner.tagAsScreenshot(fresh)
+                await pause(3)
+                print("pop-up: \(store.popup?.url.lastPathComponent ?? "none"), window up \(controller.popupVisible), thumbnail \(store.popupImage != nil)")
+                snapshot(controller.popupWindow, "popup")
+                if let popup = store.popup { try? FileManager.default.removeItem(at: popup.url) }
+                store.dismissPopup()
+                await pause(0.6)
+                print("pop-up after dismiss: window up \(controller.popupVisible)")
+            }
+            store.showToast("Copied image", symbol: "checkmark.circle.fill")
+            await pause(0.6)
+            print("notice under the icon with the shelf closed: \(controller.noticeVisible)")
+
+            // Screen recordings.
+            if let recording = store.shots.first(where: \.isVideo) {
+                await store.refresh()
+                print("recording: \(recording.url.lastPathComponent), tile frame \(store.thumbnails[recording.url] != nil), runs \(store.durations[recording.url].map(Recording.label) ?? "?")")
+                let gif = support.appendingPathComponent("test.gif"), cut = support.appendingPathComponent("test.mov")
+                try? FileManager.default.removeItem(at: gif)
+                try? FileManager.default.removeItem(at: cut)
+                let range = CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600))
+                try? await Recording.gif(from: recording.url, range: range, width: 320, fps: 10, to: gif) { _ in }
+                let frames = CGImageSourceCreateWithURL(gif as CFURL, nil).map(CGImageSourceGetCount) ?? 0
+                try? await Recording.trimmed(from: recording.url, range: CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600)), to: cut)
+                print("gif: \(frames) frames, trimmed copy runs \(await Recording.duration(cut).map { String(format: "%.1fs", $0) } ?? "none")")
+                store.editRecording(recording)
+                await pause(1.5)
+                let editor = NSApp.windows.filter { $0.isVisible && $0.title.hasPrefix("Recording") }
+                print("recording editor: \(editor.map { "\($0.title) \(Int($0.frame.width))×\(Int($0.frame.height))" })")
+                snapshot(editor.first, "recording")
+                editor.forEach { $0.close() }
+            }
             exit(0)
         }
     }

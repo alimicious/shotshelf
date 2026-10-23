@@ -7,6 +7,8 @@ struct Shot: Identifiable, Hashable {
     let url: URL
     let date: Date
     var id: URL { url }
+    /// A screen recording rather than a screenshot.
+    var isVideo: Bool { UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true }
 }
 
 enum ShotScanner {
@@ -23,15 +25,19 @@ enum ShotScanner {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
     }
 
-    /// Screenshots sitting directly in `folder`, newest first, or nil if the folder can't be read.
-    /// Subfolders are left alone, so shots filed away in projects never show up or get tidied.
+    /// Screenshots and screen recordings sitting directly in `folder`, newest first, or nil if the
+    /// folder can't be read. Subfolders are left alone, so shots filed away in projects never show
+    /// up or get tidied.
     static func scan(_ folder: URL) -> [Shot]? {
         let keys: Set<URLResourceKey> = [.creationDateKey, .contentTypeKey, .isRegularFileKey]
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: folder, includingPropertiesForKeys: Array(keys), options: [.skipsHiddenFiles]) else { return nil }
         return urls.compactMap { url in
-            guard let v = try? url.resourceValues(forKeys: keys), v.isRegularFile == true,
-                  v.contentType?.conforms(to: .image) == true, isScreenshot(url) else { return nil }
+            guard let v = try? url.resourceValues(forKeys: keys), v.isRegularFile == true, let type = v.contentType else { return nil }
+            let isShot = type.conforms(to: .image) && isScreenshot(url)
+            // Recordings may not carry the screenshot tag, so their default name counts too.
+            let isRecording = type.conforms(to: .movie) && (isScreenshot(url) || url.lastPathComponent.hasPrefix("Screen Recording"))
+            guard isShot || isRecording else { return nil }
             return Shot(url: url, date: v.creationDate ?? .distantPast)
         }
         .sorted { $0.date > $1.date }
@@ -45,6 +51,9 @@ enum ShotScanner {
 
     /// A downscaled copy for the grid; decoding full Retina screenshots would be slow and memory-hungry.
     static func thumbnail(_ url: URL, maxPixels: Int = 900) -> NSImage? {
+        if UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true {
+            return Recording.frame(url, maxPixels: maxPixels)
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,

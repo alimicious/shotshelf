@@ -13,8 +13,11 @@ first for what it does. This file covers how to work on it.
   (search), `PresetCapture.swift` (capture bar, preset editor, capture overlay), `Markup.swift`
   (markup and redact editor), `FloatingShot.swift` (shots floated on screen), `Updater.swift`,
   `HotKey.swift` (shortcuts, panel sizes, app delegate + Quick Look), `ShotScanner.swift` (folder
-  scan, OCR, QR codes, links, smart names), `ShelfIcon.swift` (menu bar icon and its new-shot
-  animation), `AppIcon.swift`.
+  scan, OCR, QR codes, links, smart names), `ShotTools.swift` (private-info detection, duplicate
+  fingerprints, combining, subject lifting, gradient backgrounds), `Recording.swift` (screen
+  recordings: frames, GIF and trimmed exports, the recording editor), `CapturePopup.swift` (the
+  after-capture pop-up and the toast capsule), `Orb.swift` (the animated gradient orb, the app's
+  mark), `ShelfIcon.swift` (menu bar icon and its new-shot animation), `AppIcon.swift`.
 
 ## Toolchain quirks (this Mac has only the Command Line Tools)
 
@@ -29,6 +32,9 @@ first for what it does. This file covers how to work on it.
     checks read wrong; just re-run.
   - `--dump`: lists screenshots and tests OCR and link detection.
   - `--render-markup in.png out.png`: one of each mark drawn on a shot, as Save Copy would save it.
+  - `--render-orb out.png`: the gradient orb frozen at four moments, and at the sizes the app uses.
+  - `--private shot.png`, `--fingerprints`: what Redact Private Info finds, and how alike shots look
+    (duplicates are under `ShotTools.duplicateDistance`).
   - `--selftest-actions --folder <dir>`: trash and undo, selection, links and QR codes, a floating shot
     and the markup editor, on sample shots (it moves them to the Trash and back, so never point it at
     real ones). `--folder` works with the other flags too. Builds run from `.build` keep their settings

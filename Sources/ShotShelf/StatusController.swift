@@ -27,6 +27,12 @@ final class StatusController: NSObject {
     private var editorHosting: NSView?
     private static let barHeight: CGFloat = 52
     private static let barGap: CGFloat = 10
+    /// The pop-up under the icon after a capture, while the shelf is closed.
+    private let popupPanel: ShelfPanel
+    private let popupHosting: NSHostingView<CapturePopupView>
+    /// A toast under the icon while neither the shelf nor the pop-up is open, as when a
+    /// newest-shot shortcut copies something.
+    private var noticePanel: ShelfPanel?
     private var clickMonitor: Any?
     private var subscriptions: Set<AnyCancellable> = []
 
@@ -54,6 +60,10 @@ final class StatusController: NSObject {
         barContainer.contentView = barStack
         Self.catchClicks(on: barContainer, cornerRadius: Self.barHeight / 2)
         bar = ShelfPanel(contentView: barContainer, size: NSSize(width: 360, height: Self.barHeight))
+        popupHosting = NSHostingView(rootView: CapturePopupView(store: store))
+        popupPanel = ShelfPanel(contentView: Self.glassSurface(popupHosting), size: NSSize(width: 300, height: 230))
+        // Its buttons work without it taking the keyboard from the app you're in.
+        popupPanel.becomesKeyOnlyIfNeeded = true
         super.init()
 
         item.button?.target = self
@@ -107,6 +117,20 @@ final class StatusController: NSObject {
             }
             .store(in: &subscriptions)
 
+        store.$popup.dropFirst().removeDuplicates()
+            .sink { [weak self] shot in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { shot == nil ? self?.hidePopup() : self?.showPopup() }
+                }
+            }
+            .store(in: &subscriptions)
+
+        store.$toast.dropFirst()
+            .sink { [weak self] toast in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.updateNotice(toast) } }
+            }
+            .store(in: &subscriptions)
+
         // On first launch the shelf opens by itself, with the welcome card.
         if store.showWelcome {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
@@ -130,6 +154,91 @@ final class StatusController: NSObject {
     private func hideSearch() {
         searchPanel.orderOut(nil)
         if panel.isVisible { panel.makeKey() }
+    }
+
+    /// Where something hangs under the menu bar icon: centred on it, kept on screen.
+    private func underIcon(_ size: NSSize) -> NSRect? {
+        guard let button = item.button, let buttonWindow = button.window,
+              let screen = buttonWindow.screen ?? NSScreen.main else { return nil }
+        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        let visible = screen.visibleFrame
+        let x = min(max(anchor.midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
+        return NSRect(x: x, y: anchor.minY - 6 - size.height, width: size.width, height: size.height)
+    }
+
+    /// Slides the pop-up down from the icon, or just fades it in with Reduce Motion.
+    private func showPopup() {
+        guard !panel.isVisible else { return }
+        popupHosting.layoutSubtreeIfNeeded()
+        guard let frame = underIcon(popupHosting.fittingSize) else { return }
+        hideNotice()
+        if popupPanel.isVisible {
+            popupPanel.setFrame(frame, display: true)
+            return
+        }
+        let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        popupPanel.setFrame(still ? frame : frame.offsetBy(dx: 0, dy: 12), display: true)
+        popupPanel.alphaValue = 0
+        popupPanel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.3, 1.15, 0.45, 1)  // springy, like the editor's morph
+            popupPanel.animator().setFrame(frame, display: true)
+            popupPanel.animator().alphaValue = 1
+        }
+    }
+
+    private func hidePopup() {
+        guard popupPanel.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            popupPanel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.store.popup == nil else { return }
+                self.popupPanel.orderOut(nil)
+                self.popupPanel.alphaValue = 1
+            }
+        })
+    }
+
+    /// Shows a toast under the icon when there's nowhere else for it: the shelf and pop-up show
+    /// their own.
+    private func updateNotice(_ toast: Toast?) {
+        guard let toast, !panel.isVisible, store.popup == nil else {
+            hideNotice()
+            return
+        }
+        let hosting = NSHostingView(rootView: ToastCapsule(toast: toast, store: store, glass: false))
+        let size = hosting.fittingSize
+        guard let frame = underIcon(size) else { return }
+        let surface = Self.glassSurface(hosting, cornerRadius: size.height / 2)
+        let notice = noticePanel ?? ShelfPanel(contentView: surface, size: size)
+        notice.contentView = surface
+        notice.becomesKeyOnlyIfNeeded = true
+        notice.setFrame(frame, display: true)
+        if !notice.isVisible {
+            notice.alphaValue = 0
+            notice.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                notice.animator().alphaValue = 1
+            }
+        }
+        noticePanel = notice
+    }
+
+    private func hideNotice() {
+        guard let notice = noticePanel, notice.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.2
+            notice.animator().alphaValue = 0
+        }, completionHandler: {
+            MainActor.assumeIsolated {
+                // A newer toast may have shown it again meanwhile.
+                if notice.alphaValue == 0 { notice.orderOut(nil) }
+            }
+        })
     }
 
     private func updateButton(frame: ShelfIcon.Frame, count: Int) {
@@ -160,6 +269,11 @@ final class StatusController: NSObject {
         view.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.01).cgColor
         view.layer?.cornerRadius = cornerRadius
     }
+
+    /// For `--selftest-actions`: what's showing under the menu bar icon.
+    var popupVisible: Bool { popupPanel.isVisible }
+    var popupWindow: NSWindow { popupPanel }
+    var noticeVisible: Bool { noticePanel?.isVisible == true }
 
     /// For `--selftest`: whether the shelf's glass fills its window.
     var panelSummary: String {
@@ -205,7 +319,9 @@ final class StatusController: NSObject {
 
     private func show() {
         guard let button = item.button else { return }
+        hideNotice()
         store.panelOpened()
+        store.panelVisible = true
         place()
         panel.makeKeyAndOrderFront(nil)
         bar.orderFront(nil)
@@ -310,6 +426,7 @@ final class StatusController: NSObject {
         guard panel.isVisible else { return }
         panel.orderOut(nil)
         bar.orderOut(nil)
+        store.panelVisible = false
         item.button?.highlight(false)
         if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
         clickMonitor = nil

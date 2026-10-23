@@ -114,6 +114,7 @@ private struct MiniCell: View {
                             .frame(width: 15, height: 15)
                             .glassEffect(.regular.tint(terracotta), in: .circle)
                     }
+                    if shot.isVideo { RecordingBadge(duration: nil) }
                 }
                 .padding(4)
             }

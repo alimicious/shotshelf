@@ -7,9 +7,30 @@ enum UpdateStatus: Equatable {
     case failed(String)
 }
 
-/// The two global shortcuts you can set.
-enum ShortcutSlot {
-    case open, search
+/// The global shortcuts you can set: opening the shelf, jumping to search, and three that act on
+/// the newest screenshot without opening anything.
+enum ShortcutSlot: CaseIterable {
+    case open, search, copyNewest, copyNewestText, floatNewest
+
+    var title: String {
+        switch self {
+        case .open: return "Open shelf"
+        case .search: return "Search screenshots"
+        case .copyNewest: return "Copy newest shot"
+        case .copyNewestText: return "Copy newest text"
+        case .floatNewest: return "Float newest shot"
+        }
+    }
+
+    var prefsKey: String {
+        switch self {
+        case .open: return Prefs.openShortcut
+        case .search: return Prefs.searchShortcut
+        case .copyNewest: return Prefs.copyNewestShortcut
+        case .copyNewestText: return Prefs.copyNewestTextShortcut
+        case .floatNewest: return Prefs.floatNewestShortcut
+        }
+    }
 }
 
 struct Toast: Equatable {
@@ -56,6 +77,8 @@ final class ShelfStore: ObservableObject {
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// The hovered shot, which arrow keys also move, so it doubles as the keyboard selection.
     @Published var hovered: URL?
+    /// The shelf is on screen, so its orb can move (it holds still while the shelf is closed).
+    @Published var panelVisible = false
     /// Shots picked with ⌘-click or ⇧-click (or ⌘A), which the footer's actions and keys then act on
     /// together. Shared by the shelf and search.
     @Published var selection: Set<URL> = []
@@ -76,8 +99,7 @@ final class ShelfStore: ObservableObject {
             Task { await loadThumbnails() }
         }
     }
-    @Published private(set) var openShortcut: Shortcut?
-    @Published private(set) var searchShortcut: Shortcut?
+    @Published private(set) var shortcuts: [ShortcutSlot: Shortcut] = [:]
     /// Which shortcut is waiting for you to press keys, if any.
     @Published private(set) var recording: ShortcutSlot?
     /// A newer signed release on GitHub, once a check has found one.
@@ -100,6 +122,24 @@ final class ShelfStore: ObservableObject {
     /// The first-launch card. Nothing is read from the screenshot folder until it's dismissed, so
     /// macOS asks for access only after the card has said why.
     @Published private(set) var showWelcome = false
+    /// The shot just taken, in the pop-up under the menu bar icon while the shelf is closed.
+    @Published private(set) var popup: Shot?
+    @Published private(set) var popupImage: NSImage?
+    /// The pointer is over the pop-up, which keeps it open.
+    @Published var popupHovered = false
+    /// Unpinned shots that are near-copies of a newer one; Tidy offers them along with older shots.
+    @Published private(set) var duplicates: [Shot] = []
+    /// How long each screen recording runs, in seconds.
+    @Published private(set) var durations: [URL: Double] = [:]
+    /// The text in the system's translation popover over the shelf, while it's open.
+    @Published var translation = ""
+    @Published var showTranslation = false
+    /// Where the last capture size (or Again) captured, for Again.
+    @Published private(set) var lastCaptureArea: CGRect?
+    /// Captures wait three seconds first, to open a menu or hover over something.
+    @Published var captureTimer = UserDefaults.standard.bool(forKey: Prefs.captureTimer) {
+        didSet { UserDefaults.standard.set(captureTimer, forKey: Prefs.captureTimer) }
+    }
 
     let folder = ShotScanner.folder
     let iconAnimator = IconAnimator()
@@ -115,9 +155,12 @@ final class ShelfStore: ObservableObject {
 
     private var watcher: FolderWatcher?
     private var captureOverlay: CaptureOverlay?
-    private var openHotKey: HotKey?
-    private var searchHotKey: HotKey?
+    private var hotKeys: [ShortcutSlot: HotKey] = [:]
     private var markupWindow: NSWindow?
+    private var recordingWindow: NSWindow?
+    private var popupTask: Task<Void, Never>?
+    /// How each shot looks, by path, for finding near-identical ones.
+    private var fingerprints: [String: ShotTools.Fingerprint]
     private var floaters: [FloatingShot] = []
     /// What the last Trash or Tidy moved, until it's undone or something else is trashed.
     private var lastTrashed: [Trashed] = []
@@ -140,6 +183,7 @@ final class ShelfStore: ObservableObject {
         folders = Self.loadFolders()
         texts = Self.loadTexts()
         codes = Self.loadCodes()
+        fingerprints = Self.loadFingerprints()
         presets = Self.loadPresets()
         self.shots = Self.arranged(shots)
         freshSince = Date(timeIntervalSince1970: UserDefaults.standard.double(forKey: Prefs.lastSeen))
@@ -154,14 +198,18 @@ final class ShelfStore: ObservableObject {
             Prefs.iconAnimation: true,
             Prefs.autoUpdates: true,
             Prefs.searchEyes: true,
+            Prefs.capturePopup: true,
         ])
         panelSize = Self.loadPanelSize()
-        openShortcut = Self.loadShortcut(Prefs.openShortcut, fallback: Shortcut.legacy(defaults.string(forKey: Prefs.hotKey)) ?? .openDefault)
-        searchShortcut = Self.loadShortcut(Prefs.searchShortcut, fallback: nil)
+        let legacy = Shortcut.legacy(defaults.string(forKey: Prefs.hotKey)) ?? .openDefault
+        shortcuts = Dictionary(uniqueKeysWithValues: ShortcutSlot.allCases.compactMap { slot in
+            Self.loadShortcut(slot.prefsKey, fallback: slot == .open ? legacy : nil).map { (slot, $0) }
+        })
         pinned = Self.loadPinned()
         folders = Self.loadFolders()
         texts = Self.loadTexts()
         codes = Self.loadCodes()
+        fingerprints = Self.loadFingerprints()
         presets = Self.loadPresets()
         // People updating from before the welcome card have used the app already, so skip it for them.
         if defaults.object(forKey: Prefs.welcomed) == nil {
@@ -241,6 +289,7 @@ final class ShelfStore: ObservableObject {
         selection = selection.filter(live.contains)
         detectArrivals()
         indexText()
+        updateDuplicates()
         await loadThumbnails()
     }
 
@@ -258,6 +307,9 @@ final class ShelfStore: ObservableObject {
         thumbnails = thumbnails.filter { wanted.contains($0.key) }
         for url in wanted where thumbnails[url] == nil {
             thumbnails[url] = await Task.detached { ShotScanner.thumbnail(url) }.value
+        }
+        for shot in visible where shot.isVideo && durations[shot.url] == nil {
+            durations[shot.url] = await Recording.duration(shot.url)
         }
     }
 
@@ -296,6 +348,7 @@ final class ShelfStore: ObservableObject {
         newCount = 0
         confirmingTidy = false
         dragging = nil
+        dismissPopup()
     }
 
     // MARK: - New arrivals
@@ -312,6 +365,10 @@ final class ShelfStore: ObservableObject {
         guard !arrived.isEmpty else { return }
         handled.formUnion(arrived.map(\.url.path))
         if UserDefaults.standard.bool(forKey: Prefs.iconAnimation) { iconAnimator.play() }
+        if UserDefaults.standard.bool(forKey: Prefs.capturePopup), panelWindow?.isVisible != true,
+           let newest = arrived.max(by: { $0.date < $1.date }) {
+            showPopup(newest)
+        }
         let app = Self.frontmostAppName()
         for shot in arrived {
             Task { await read(shot, namingAfter: app) }
@@ -328,6 +385,12 @@ final class ShelfStore: ObservableObject {
 
     private func read(_ shot: Shot, namingAfter app: String?) async {
         let url = shot.url
+        // Recordings have no text to read or name them by.
+        guard !shot.isVideo else {
+            texts[url.path] = ""
+            codes[url.path] = []
+            return
+        }
         reading.insert(url.path)
         let (lines, found) = await Task.detached { (ShotText.recognize(url), ShotText.codes(url)) }.value
         reading.remove(url.path)
@@ -339,41 +402,71 @@ final class ShelfStore: ObservableObject {
         rename(shot, to: name)
     }
 
-    /// Reads the text and codes of any shot that doesn't have them yet, one at a time in the
-    /// background. Shots read before codes were looked for only get the (quick) code check.
+    /// Reads the text, codes and look (for spotting duplicates) of any shot that doesn't have them
+    /// yet, one at a time in the background. Each is only worked out when it's missing.
     private func indexText() {
         guard !isIndexing, !isPreview else { return }
         let missing = shots.filter {
-            (texts[$0.url.path] == nil || codes[$0.url.path] == nil) && !reading.contains($0.url.path)
+            let path = $0.url.path
+            let needs = texts[path] == nil || codes[path] == nil || (!$0.isVideo && fingerprints[path] == nil)
+            return needs && !reading.contains(path)
         }
         guard !missing.isEmpty else { return }
         isIndexing = true
         indexing = missing.count
         Task {
             for shot in missing {
-                let url = shot.url
-                let needsText = texts[url.path] == nil
-                let (text, found) = await Task.detached(priority: .utility) {
-                    (needsText ? ShotText.recognize(url).map(\.text).joined(separator: "\n") : nil, ShotText.codes(url))
+                let url = shot.url, path = url.path
+                if shot.isVideo {
+                    texts[path] = ""
+                    codes[path] = []
+                    indexing -= 1
+                    continue
+                }
+                let needsText = texts[path] == nil, needsCodes = codes[path] == nil, needsPrint = fingerprints[path] == nil
+                let (text, found, print) = await Task.detached(priority: .utility) {
+                    (needsText ? ShotText.recognize(url).map(\.text).joined(separator: "\n") : nil,
+                     needsCodes ? ShotText.codes(url) : nil,
+                     needsPrint ? ShotTools.fingerprint(url) : nil)
                 }.value
-                if FileManager.default.fileExists(atPath: url.path) {
-                    if let text { texts[url.path] = text }
-                    codes[url.path] = found
+                if FileManager.default.fileExists(atPath: path) {
+                    if let text { texts[path] = text }
+                    if let found { codes[path] = found }
+                    if let print { fingerprints[path] = print }
                 }
                 indexing -= 1
             }
             let live = Set(shots.map(\.url.path))
             texts = texts.filter { live.contains($0.key) }
             codes = codes.filter { live.contains($0.key) }
+            fingerprints = fingerprints.filter { live.contains($0.key) }
             saveTexts()
             isIndexing = false
             indexing = 0
+            updateDuplicates()
+        }
+    }
+
+    /// Works out which shots are near-copies of others, off the main thread.
+    private func updateDuplicates() {
+        let entries = shots.compactMap { shot in
+            fingerprints[shot.url.path].map { (path: shot.url.path, date: shot.date, pinned: isPinned(shot), print: $0) }
+        }
+        Task {
+            let paths = Set(await Task.detached(priority: .utility) { ShotTools.duplicates(entries) }.value)
+            duplicates = shots.filter { paths.contains($0.url.path) }
         }
     }
 
     // MARK: - Actions
 
     func copy(_ shot: Shot) {
+        if shot.isVideo {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([shot.url as NSURL])
+            showToast("Copied recording", symbol: "checkmark.circle.fill")
+            return
+        }
         let item = NSPasteboardItem()
         // The image itself so it pastes anywhere, plus the file for apps that prefer attachments.
         if let data = try? Data(contentsOf: shot.url) {
@@ -418,6 +511,81 @@ final class ShelfStore: ObservableObject {
         return found
     }
 
+    /// Opens the shot's text in the system's translation popover over the shelf, which translates on
+    /// your Mac (macOS may first offer to download the languages).
+    func translate(_ shot: Shot) {
+        Task {
+            let text = await text(of: shot)
+            guard !text.isEmpty else {
+                showToast("No text to translate", symbol: "text.badge.xmark")
+                return
+            }
+            if panelWindow?.isVisible != true {
+                togglePanel?()
+                // The popover needs the shelf on screen to hang from.
+                try? await Task.sleep(for: .milliseconds(400))
+            }
+            translation = text
+            showTranslation = true
+        }
+    }
+
+    /// Copies the main subject of the shot (a person, pet or object in a photo) cut out of its background.
+    func copySubject(_ shot: Shot) {
+        Task {
+            let url = shot.url
+            guard let data = await Task.detached(operation: { ShotTools.subject(url) }).value else {
+                showToast("No subject to lift out", symbol: "exclamationmark.triangle")
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(data, forType: .png)
+            showToast("Copied the subject", symbol: "person.and.background.dotted")
+        }
+    }
+
+    /// Copies the shot framed on the background last picked in markup (Sunset the first time).
+    func copyWithBackdrop(_ shot: Shot) {
+        let backdrop = Backdrop(rawValue: UserDefaults.standard.string(forKey: Prefs.markupBackdrop) ?? "") ?? .sunset
+        Task {
+            let url = shot.url
+            guard let data = await Task.detached(operation: {
+                ShotTools.cgImage(url).flatMap(backdrop.frame).flatMap(ShotTools.png)
+            }).value else {
+                showToast("Couldn't frame that shot", symbol: "exclamationmark.triangle")
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(data, forType: .png)
+            showToast("Copied on a \(backdrop.name) background", symbol: "photo.artframe")
+        }
+    }
+
+    /// Joins the selected screenshots into one new one, side by side or stacked.
+    func combine(_ shots: [Shot], stacked: Bool) {
+        let urls = shots.filter { !$0.isVideo }.map(\.url)
+        guard urls.count > 1 else {
+            showToast("Pick two or more screenshots to combine", symbol: "exclamationmark.triangle")
+            return
+        }
+        Task {
+            guard let data = await Task.detached(operation: { ShotTools.combine(urls, stacked: stacked) }).value else {
+                showToast("Couldn't combine them", symbol: "exclamationmark.triangle")
+                return
+            }
+            let dest = ShotScanner.uniqueURL(in: folder, name: "Combined \(urls.count) shots \(Self.timestamp())", ext: "png")
+            handled.insert(dest.path)
+            do {
+                try data.write(to: dest)
+                ShotScanner.tagAsScreenshot(dest)
+                showToast("Combined \(urls.count) shots", symbol: stacked ? "rectangle.split.1x2" : "rectangle.split.3x1")
+            } catch {
+                showToast("Couldn't save the combined shot", symbol: "exclamationmark.triangle")
+            }
+            await refresh()
+        }
+    }
+
     /// Opens a web link (from the text or a QR code), or copies an email address or a code's text.
     func use(_ link: ShotLink) {
         if let url = link.url {
@@ -430,17 +598,22 @@ final class ShelfStore: ObservableObject {
         }
     }
 
+    /// A shot's text, read now if it hasn't been yet.
+    private func text(of shot: Shot) async -> String {
+        let url = shot.url
+        if let text = texts[url.path] { return text }
+        guard !shot.isVideo else { return "" }
+        let text = await Task.detached { ShotText.recognize(url).map(\.text).joined(separator: "\n") }.value
+        texts[url.path] = text
+        saveTexts()
+        return text
+    }
+
     func copyText(_ shot: Shot) {
         Task {
-            let url = shot.url
-            var text = texts[url.path]
-            if text == nil {
-                text = await Task.detached { ShotText.recognize(url).map(\.text).joined(separator: "\n") }.value
-                texts[url.path] = text
-                saveTexts()
-            }
-            guard let text, !text.isEmpty else {
-                showToast("No text found", symbol: "text.badge.xmark")
+            let text = await text(of: shot)
+            guard !text.isEmpty else {
+                showToast(shot.isVideo ? "Recordings have no text to copy" : "No text found", symbol: "text.badge.xmark")
                 return
             }
             NSPasteboard.general.clearContents()
@@ -554,19 +727,28 @@ final class ShelfStore: ObservableObject {
         }
         if hovered == shot.url { hovered = dest }
         if selection.remove(shot.url) != nil { selection.insert(dest) }
+        if popup?.url == shot.url { popup = Shot(url: dest, date: shot.date) }
         Task { await refresh() }
     }
 
     // MARK: - Markup
 
-    /// Opens the markup editor: arrows, boxes, highlights, text and pixelated redactions, saved as a copy.
-    func markup(_ shot: Shot) {
+    /// Opens the markup editor: arrows, boxes, highlights, text and pixelated redactions, saved as a
+    /// copy, optionally framed on a background. With `redactPrivate`, it starts by finding and
+    /// redacting private details. Recordings open their own editor instead.
+    func markup(_ shot: Shot, redactPrivate: Bool = false) {
+        if shot.isVideo {
+            editRecording(shot)
+            return
+        }
         guard let model = MarkupModel(shot: shot) else {
             showToast("Couldn't open that shot", symbol: "exclamationmark.triangle")
             return
         }
+        if redactPrivate { model.redactPrivateInfo() }
         markupWindow?.close()
         closePanel?()
+        dismissPopup()
         let view = MarkupView(
             model: model,
             onCopy: { [weak self] data in
@@ -580,7 +762,7 @@ final class ShelfStore: ObservableObject {
 
         // Fit the shot in at most 960×640, plus room for the padding and toolbar.
         let width = min(960, 640 * model.aspect)
-        let size = NSSize(width: max(640, width + 32), height: max(420, width / model.aspect + 32 + 56))
+        let size = NSSize(width: max(720, width + 32), height: max(420, width / model.aspect + 32 + 56))
         let hosting = NSHostingController(rootView: view)
         hosting.sizingOptions = []
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
@@ -621,6 +803,105 @@ final class ShelfStore: ObservableObject {
         Task { await refresh() }
     }
 
+    // MARK: - Recordings
+
+    /// Opens the recording editor: trim it, then save a GIF or a trimmed copy.
+    func editRecording(_ shot: Shot) {
+        let model = RecordingModel(shot: shot)
+        recordingWindow?.close()
+        closePanel?()
+        dismissPopup()
+        let view = RecordingView(model: model,
+                                 onSaveGIF: { [weak self] in self?.saveGIF(model) },
+                                 onSaveVideo: { [weak self] in self?.saveTrimmed(model) })
+        let hosting = NSHostingController(rootView: view)
+        hosting.sizingOptions = []
+        let size = NSSize(width: 820, height: 560)
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+        window.title = "Recording – \(shot.url.deletingPathExtension().lastPathComponent)"
+        window.titlebarAppearsTransparent = true
+        window.isReleasedWhenClosed = false
+        window.contentViewController = hosting
+        window.setContentSize(size)
+        window.center()
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        recordingWindow = window
+    }
+
+    /// Saves the (trimmed) recording as a GIF beside it, tagged so it lands on the shelf.
+    private func saveGIF(_ model: RecordingModel) {
+        let shot = model.shot, range = model.range, width = model.gifWidth
+        let dest = ShotScanner.uniqueURL(in: shot.url.deletingLastPathComponent(),
+                                         name: shot.url.deletingPathExtension().lastPathComponent, ext: "gif")
+        handled.insert(dest.path)
+        model.busy = "Making the GIF…"
+        Task {
+            do {
+                try await Recording.gif(from: shot.url, range: range, width: width, fps: 15, to: dest) { done in
+                    Task { @MainActor in model.busy = "Making the GIF… \(Int(done * 100))%" }
+                }
+                ShotScanner.tagAsScreenshot(dest)
+                recordingWindow?.close()
+                showToast("Saved a GIF", symbol: "photo.stack")
+                await refresh()
+            } catch {
+                model.busy = nil
+                showToast("Couldn't make the GIF", symbol: "exclamationmark.triangle")
+            }
+        }
+    }
+
+    /// Saves the trimmed part as "… (trimmed).mov" beside the recording.
+    private func saveTrimmed(_ model: RecordingModel) {
+        let shot = model.shot, range = model.range
+        let dest = ShotScanner.uniqueURL(in: shot.url.deletingLastPathComponent(),
+                                         name: shot.url.deletingPathExtension().lastPathComponent + " (trimmed)", ext: "mov")
+        handled.insert(dest.path)
+        model.busy = "Saving the trimmed video…"
+        Task {
+            do {
+                try await Recording.trimmed(from: shot.url, range: range, to: dest)
+                ShotScanner.tagAsScreenshot(dest)
+                recordingWindow?.close()
+                showToast("Saved the trimmed video", symbol: "timeline.selection")
+                await refresh()
+            } catch {
+                model.busy = nil
+                showToast("Couldn't save the trimmed video", symbol: "exclamationmark.triangle")
+            }
+        }
+    }
+
+    // MARK: - Pop-up
+
+    /// Shows a shot just taken under the menu bar icon for about six seconds, longer while the
+    /// pointer is over it.
+    private func showPopup(_ shot: Shot) {
+        popup = shot
+        popupImage = nil
+        popupTask?.cancel()
+        popupTask = Task {
+            let url = shot.url
+            popupImage = await Task.detached(operation: { ShotScanner.thumbnail(url, maxPixels: 700) }).value
+            var remaining = 6.0
+            while remaining > 0 {
+                try? await Task.sleep(for: .seconds(0.25))
+                if Task.isCancelled { return }
+                // Hovering holds it, and it waits a couple of seconds after the pointer leaves.
+                remaining = popupHovered ? max(remaining, 2) : remaining - 0.25
+            }
+            popup = nil
+        }
+    }
+
+    func dismissPopup() {
+        popupTask?.cancel()
+        popup = nil
+        popupHovered = false
+    }
+
     // MARK: - Folders
 
     func addFolder() {
@@ -659,6 +940,7 @@ final class ShelfStore: ObservableObject {
             moved += 1
         }
         savePinned()
+        if let popup, shots.contains(popup) { dismissPopup() }
         switch moved {
         case 0: showToast("Couldn't move \(shots.count == 1 ? "it" : "them") to \(folder.lastPathComponent)", symbol: "exclamationmark.triangle")
         case 1: showToast("Moved to \(folder.lastPathComponent)", symbol: "folder.fill")
@@ -669,10 +951,18 @@ final class ShelfStore: ObservableObject {
 
     // MARK: - Tidy
 
-    /// Unpinned shots from before today: what the Tidy button sends to the Trash.
+    /// Unpinned shots from before today, plus near-copies of newer shots: what the Tidy button
+    /// sends to the Trash.
     var tidyCandidates: [Shot] {
         let today = Calendar.current.startOfDay(for: Date())
-        return shots.filter { $0.date < today && !isPinned($0) }
+        let copies = Set(duplicates.map(\.url))
+        return shots.filter { !isPinned($0) && ($0.date < today || copies.contains($0.url)) }
+    }
+
+    /// How many of the Tidy candidates are there only for being duplicates (from today).
+    var tidyDuplicateCount: Int {
+        let today = Calendar.current.startOfDay(for: Date())
+        return tidyCandidates.filter { $0.date >= today }.count
     }
 
     func tidy() {
@@ -701,6 +991,7 @@ final class ShelfStore: ObservableObject {
             moved.append(Trashed(original: shot.url, inTrash: inTrash as URL, wasPinned: wasPinned))
         }
         savePinned()
+        if let popup, moved.contains(where: { $0.original == popup.url }) { dismissPopup() }
         Task { await refresh() }
         return moved
     }
@@ -755,6 +1046,10 @@ final class ShelfStore: ObservableObject {
 
     /// Keeps a shot on screen above other windows, to refer to while you work.
     func float(_ shot: Shot) {
+        guard !shot.isVideo else {
+            showToast("Recordings can't float yet", symbol: "exclamationmark.triangle")
+            return
+        }
         guard let floater = FloatingShot(shot: shot, cascade: floaters.count,
                                          onCopy: { [weak self] in self?.copy(shot) },
                                          onClose: { [weak self] closed in self?.floaters.removeAll { $0 === closed } })
@@ -764,11 +1059,16 @@ final class ShelfStore: ObservableObject {
         }
         floaters.append(floater)
         closePanel?()
+        dismissPopup()
         floater.show()
     }
 
     /// For `--selftest-actions`: the floating shots' windows.
     var floaterWindows: [NSWindow] { floaters.map(\.window) }
+    var floatingShots: [FloatingShot] { floaters }
+
+    /// For `--selftest-actions`: whether a shortcut got through to the system.
+    func isRegistered(_ slot: ShortcutSlot) -> Bool { hotKeys[slot] != nil }
 
     // MARK: - Keyboard
 
@@ -912,17 +1212,32 @@ final class ShelfStore: ObservableObject {
 
     // MARK: - Settings
 
-    var hotKeyRegistered: Bool { openHotKey != nil }
+    var hotKeyRegistered: Bool { hotKeys[.open] != nil }
 
     func shortcut(for slot: ShortcutSlot) -> Shortcut? {
-        slot == .open ? openShortcut : searchShortcut
+        shortcuts[slot]
     }
 
     private func applyHotKeys() {
-        openHotKey = nil
-        searchHotKey = nil
-        openHotKey = openShortcut.flatMap { HotKey($0) { [weak self] in MainActor.assumeIsolated { self?.togglePanel?() } } }
-        searchHotKey = searchShortcut.flatMap { HotKey($0) { [weak self] in MainActor.assumeIsolated { self?.openSearch() } } }
+        hotKeys = [:]  // unregisters the old ones before registering again
+        for (slot, shortcut) in shortcuts {
+            hotKeys[slot] = HotKey(shortcut) { [weak self] in MainActor.assumeIsolated { self?.perform(slot) } }
+        }
+    }
+
+    /// What a global shortcut does. The newest-shot ones go by date, wherever you've arranged it.
+    func perform(_ slot: ShortcutSlot) {
+        let newest = shots.filter { !$0.isVideo }.max { $0.date < $1.date }
+        switch slot {
+        case .open: togglePanel?()
+        case .search: openSearch()
+        case .copyNewest, .copyNewestText, .floatNewest:
+            guard let newest else {
+                showToast("No screenshots yet", symbol: "photo")
+                return
+            }
+            if slot == .copyNewest { copy(newest) } else if slot == .copyNewestText { copyText(newest) } else { float(newest) }
+        }
     }
 
     /// Opens the shelf straight into search with the field ready; pressing it again closes both.
@@ -937,8 +1252,7 @@ final class ShelfStore: ObservableObject {
     func startRecording(_ slot: ShortcutSlot) {
         recording = slot
         // Let the current shortcuts through as ordinary key presses so they can be re-recorded.
-        openHotKey = nil
-        searchHotKey = nil
+        hotKeys = [:]
     }
 
     func cancelRecording() {
@@ -961,9 +1275,8 @@ final class ShelfStore: ObservableObject {
                 return
             }
             recording = nil
-            let other: ShortcutSlot = slot == .open ? .search : .open
-            if self.shortcut(for: other) == shortcut {
-                showToast("\(shortcut.display) is already in use", symbol: "exclamationmark.triangle")
+            if let clash = ShortcutSlot.allCases.first(where: { $0 != slot && shortcuts[$0] == shortcut }) {
+                showToast("\(shortcut.display) is already set for \(clash.title)", symbol: "exclamationmark.triangle")
                 applyHotKeys()
                 return
             }
@@ -972,19 +1285,12 @@ final class ShelfStore: ObservableObject {
     }
 
     func setShortcut(_ shortcut: Shortcut?, for slot: ShortcutSlot) {
-        switch slot {
-        case .open: openShortcut = shortcut
-        case .search: searchShortcut = shortcut
-        }
-        UserDefaults.standard.set(try? JSONEncoder().encode(shortcut), forKey: slot == .open ? Prefs.openShortcut : Prefs.searchShortcut)
+        shortcuts[slot] = shortcut
+        UserDefaults.standard.set(try? JSONEncoder().encode(shortcut), forKey: slot.prefsKey)
         applyHotKeys()
-        if let shortcut, shortcutHotKey(slot) == nil {
+        if let shortcut, hotKeys[slot] == nil {
             showToast("\(shortcut.display) is taken by another app", symbol: "exclamationmark.triangle")
         }
-    }
-
-    private func shortcutHotKey(_ slot: ShortcutSlot) -> HotKey? {
-        slot == .open ? openHotKey : searchHotKey
     }
 
     /// For `--render-bar`: `count` sample capture sizes, saving nothing.
@@ -1071,26 +1377,76 @@ final class ShelfStore: ObservableObject {
         }
     }
 
-    /// Captures `rect` (global, top-left origin) into the screenshot folder, named and tagged
-    /// like a macOS screenshot so it lands on the shelf like any other.
-    private func takeScreenshot(of rect: CGRect) {
-        captureOverlay = nil
+    /// Click a window to capture just it, with its shadow, like ⌘⇧4 then Space. Esc cancels.
+    func captureWindow() {
+        guard CGPreflightScreenCaptureAccess() else {
+            askForScreenRecording()
+            return
+        }
+        closePanel?()
+        let dest = newScreenshotURL()
+        Task {
+            // Pressing Esc leaves no file, which isn't worth a message.
+            guard await Self.screencapture(["-i", "-w", dest.path], saving: dest) else { return }
+            ShotScanner.tagAsScreenshot(dest)
+            await refresh()
+        }
+    }
+
+    /// Captures the same area as the last capture size (or Again) did, straight away.
+    func captureAgain() {
+        guard let area = lastCaptureArea else { return }
+        guard CGPreflightScreenCaptureAccess() else {
+            askForScreenRecording()
+            return
+        }
+        closePanel?()
+        takeScreenshot(of: area)
+    }
+
+    private func newScreenshotURL() -> URL {
+        ShotScanner.uniqueURL(in: folder, name: "Screenshot \(Self.timestamp())", ext: "png")
+    }
+
+    /// "2026-10-22 at 14.05.09", like macOS names its screenshots.
+    private static func timestamp() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        let dest = ShotScanner.uniqueURL(in: folder, name: "Screenshot \(formatter.string(from: Date()))", ext: "png")
+        return formatter.string(from: Date())
+    }
+
+    /// Runs screencapture and reports whether it saved `dest`.
+    private static func screencapture(_ arguments: [String], saving dest: URL) async -> Bool {
+        await Task.detached { () -> Bool in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            process.arguments = arguments
+            guard (try? process.run()) != nil else { return false }
+            process.waitUntilExit()
+            return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: dest.path)
+        }.value
+    }
+
+    /// Captures `rect` (global, top-left origin) into the screenshot folder, named and tagged
+    /// like a macOS screenshot so it lands on the shelf like any other. With the timer on, it
+    /// counts down from three under the menu bar icon first.
+    private func takeScreenshot(of rect: CGRect) {
+        captureOverlay = nil
+        lastCaptureArea = rect
+        let dest = newScreenshotURL()
         let area = "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
         Task {
+            if captureTimer {
+                for second in [3, 2, 1] {
+                    showToast("Capturing in \(second)…", symbol: "timer")
+                    try? await Task.sleep(for: .seconds(1))
+                }
+                toast = nil
+                try? await Task.sleep(for: .milliseconds(250))
+            }
             // Give the overlay a moment to leave the screen so it isn't in the shot.
             try? await Task.sleep(for: .milliseconds(150))
-            let ok = await Task.detached { () -> Bool in
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-                process.arguments = ["-R", area, dest.path]
-                guard (try? process.run()) != nil else { return false }
-                process.waitUntilExit()
-                return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: dest.path)
-            }.value
-            guard ok else {
+            guard await Self.screencapture(["-R", area, dest.path], saving: dest) else {
                 showToast("Couldn't take the screenshot", symbol: "exclamationmark.triangle")
                 return
             }
@@ -1202,6 +1558,7 @@ final class ShelfStore: ObservableObject {
     }()
     private static var textsURL: URL { supportFolder.appendingPathComponent("text.json") }
     private static var codesURL: URL { supportFolder.appendingPathComponent("codes.json") }
+    private static var fingerprintsURL: URL { supportFolder.appendingPathComponent("fingerprints.json") }
 
     private static func loadTexts() -> [String: String] {
         guard let data = try? Data(contentsOf: textsURL) else { return [:] }
@@ -1213,10 +1570,16 @@ final class ShelfStore: ObservableObject {
         return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
     }
 
-    /// Saves the text and codes read so far.
+    private static func loadFingerprints() -> [String: ShotTools.Fingerprint] {
+        guard let data = try? Data(contentsOf: fingerprintsURL) else { return [:] }
+        return (try? JSONDecoder().decode([String: ShotTools.Fingerprint].self, from: data)) ?? [:]
+    }
+
+    /// Saves the text, codes and fingerprints worked out so far.
     private func saveTexts() {
         guard !isPreview else { return }
         try? JSONEncoder().encode(texts).write(to: Self.textsURL, options: .atomic)
         try? JSONEncoder().encode(codes).write(to: Self.codesURL, options: .atomic)
+        try? JSONEncoder().encode(fingerprints).write(to: Self.fingerprintsURL, options: .atomic)
     }
 }

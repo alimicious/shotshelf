@@ -85,16 +85,29 @@ struct PresetEditor: View {
     }
 }
 
-/// What's inside the capture bar's big capsule, Spotlight style: a viewfinder, then your sizes
-/// in large type (click one to capture), or a "Capture sizes" placeholder before there are any.
+/// What's inside the capture bar's big capsule, Spotlight style: a viewfinder (click it for the
+/// window, again and timer tools), then your sizes in large type (click one to capture), or a
+/// "Capture sizes" placeholder before there are any.
 struct CaptureBarView: View {
     @ObservedObject var store: ShelfStore
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "viewfinder")
-                .font(.system(size: 21, weight: .medium))
-                .foregroundStyle(.secondary)
+            Menu {
+                Button("Capture a Window", systemImage: "macwindow") { store.captureWindow() }
+                Button("Capture the Same Area Again", systemImage: "arrow.counterclockwise") { store.captureAgain() }
+                    .disabled(store.lastCaptureArea == nil)
+                Divider()
+                Toggle(isOn: $store.captureTimer) { Label("3-Second Timer", systemImage: "timer") }
+            } label: {
+                // Turns into a terracotta timer while the timer is on, so it's clear captures will wait.
+                Image(systemName: store.captureTimer ? "timer" : "viewfinder")
+                    .font(.system(size: 21, weight: .medium))
+                    .foregroundStyle(store.captureTimer ? AnyShapeStyle(terracotta) : AnyShapeStyle(.secondary))
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+            .help("Capture a window, capture the same area again, or have captures wait 3 seconds")
             if store.presets.isEmpty {
                 Button { store.newPreset() } label: {
                     Text("Capture sizes")

@@ -103,11 +103,26 @@ final class MarkupModel: ObservableObject {
     }
     /// The text mark being typed into, if any.
     @Published var editing: UUID?
+    /// A gradient to frame the shot on, for sharing. The last one picked is remembered for
+    /// Copy with Background.
+    @Published var backdrop: Backdrop? {
+        didSet { if let backdrop { UserDefaults.standard.set(backdrop.rawValue, forKey: Prefs.markupBackdrop) } }
+    }
+    /// A line about what Redact Private Info found, shown over the canvas for a few seconds.
+    @Published private(set) var notice: String?
+    @Published private(set) var findingPrivate = false
 
     var allMarks: [Mark] { marks + (drawing.map { [$0] } ?? []) }
     var aspect: CGFloat { CGFloat(image.width) / CGFloat(image.height) }
+    /// The whole picture's shape, background included.
+    var framedAspect: CGFloat {
+        guard backdrop != nil else { return aspect }
+        let p = Backdrop.metrics(width: image.width, height: image.height).padding
+        return (CGFloat(image.width) + p * 2) / (CGFloat(image.height) + p * 2)
+    }
+    var hasChanges: Bool { !marks.isEmpty || backdrop != nil }
     /// True when all there is are redactions, so a saved copy is called "(redacted)".
-    var redactsOnly: Bool { marks.allSatisfy { $0.tool == .redact } }
+    var redactsOnly: Bool { backdrop == nil && marks.allSatisfy { $0.tool == .redact } }
     /// Line width and text size in the image's own pixels, in step with its size so marks look the
     /// same on a small crop and a whole Retina screen.
     var lineWidth: CGFloat { max(3, CGFloat(max(image.width, image.height)) * 0.0035) }
@@ -164,6 +179,34 @@ final class MarkupModel: ObservableObject {
     func undo() {
         commitText()
         _ = marks.popLast()
+    }
+
+    /// Finds email addresses, phone and card numbers, keys, tokens and passwords in the shot's text
+    /// and adds a redaction over each one that isn't covered yet.
+    func redactPrivateInfo() {
+        guard !findingPrivate else { return }
+        commitText()
+        findingPrivate = true
+        // Stays up until it's done: the first search after a restart can take a while.
+        notice = "Looking for private details…"
+        let url = shot.url
+        Task {
+            let areas = await Task.detached(operation: { ShotTools.privateAreas(url) }).value
+            findingPrivate = false
+            let covered = marks.filter { $0.tool == .redact }.map(\.rect)
+            let new = areas.filter { area in !covered.contains { $0.contains(area) } }
+            marks += new.map { Mark(tool: .redact, start: $0.origin, end: CGPoint(x: $0.maxX, y: $0.maxY), color: 0) }
+            show(new.isEmpty ? "Found nothing private to hide"
+                             : "Hid \(new.count) private detail\(new.count == 1 ? "" : "s"). Check the rest before sharing.")
+        }
+    }
+
+    private func show(_ text: String) {
+        notice = text
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if notice == text { notice = nil }
+        }
     }
 
     /// The shot with every mark drawn in, as PNG data.
@@ -231,10 +274,8 @@ final class MarkupModel: ObservableObject {
         }
 
         guard let output = ctx.makeImage() else { return nil }
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, output, nil)
-        return CGImageDestinationFinalize(dest) ? data as Data : nil
+        if let backdrop { return backdrop.frame(output).flatMap(ShotTools.png) }
+        return ShotTools.png(output)
     }
 }
 
@@ -248,19 +289,52 @@ struct MarkupView: View {
         VStack(spacing: 0) {
             GeometryReader { geo in
                 let size = fitted(in: geo.size)
-                canvas(size: size)
+                framed(size)
                     .frame(width: size.width, height: size.height)
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
             .padding(16)
+            .overlay(alignment: .bottom) {
+                if let notice = model.notice {
+                    Label(notice, systemImage: model.findingPrivate ? "magnifyingglass" : "eye.slash")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .glassEffect(.regular, in: .capsule)
+                        .padding(.bottom, 26)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.spring(duration: 0.28, bounce: 0.25), value: model.notice)
             toolbar
         }
-        .frame(minWidth: 640, minHeight: 420)
+        .frame(minWidth: 720, minHeight: 420)
     }
 
     private func fitted(in space: CGSize) -> CGSize {
-        let width = min(space.width, space.height * model.aspect)
-        return CGSize(width: width, height: width / model.aspect)
+        let width = min(space.width, space.height * model.framedAspect)
+        return CGSize(width: width, height: width / model.framedAspect)
+    }
+
+    /// The canvas, on its background when there is one, drawn the way `Backdrop.frame` saves it.
+    @ViewBuilder
+    private func framed(_ size: CGSize) -> some View {
+        if let backdrop = model.backdrop {
+            let m = Backdrop.metrics(width: model.image.width, height: model.image.height)
+            let scale = size.width / (CGFloat(model.image.width) + m.padding * 2)
+            ZStack {
+                LinearGradient(colors: [Color(nsColor: backdrop.colors.0), Color(nsColor: backdrop.colors.1)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                canvas(size: CGSize(width: CGFloat(model.image.width) * scale, height: CGFloat(model.image.height) * scale))
+                    .clipShape(RoundedRectangle(cornerRadius: m.radius * scale))
+                    .shadow(color: .black.opacity(0.35), radius: m.shadow * scale / 2, y: m.shadow * scale * 0.4)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+        } else {
+            canvas(size: size)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+        }
     }
 
     private func canvas(size: CGSize) -> some View {
@@ -287,8 +361,6 @@ struct MarkupView: View {
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 0)
@@ -359,6 +431,26 @@ struct MarkupView: View {
             // Redactions are always pixelated, so colour doesn't apply.
             .opacity(model.tool == .redact ? 0.35 : 1)
             .disabled(model.tool == .redact)
+            GlassEffectContainer(spacing: 6) {
+                HStack(spacing: 4) {
+                    Button { model.redactPrivateInfo() } label: {
+                        Image(systemName: "wand.and.sparkles").font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
+                    }
+                    .buttonStyle(.glass).buttonBorderShape(.circle).disabled(model.findingPrivate)
+                    .help("Redact Private Info: pixelates email addresses, phone and card numbers, keys, tokens and passwords")
+                    Menu {
+                        Button { model.backdrop = nil } label: { checked("No Background", model.backdrop == nil) }
+                        Divider()
+                        ForEach(Backdrop.allCases) { backdrop in
+                            Button { model.backdrop = backdrop } label: { checked(backdrop.name, model.backdrop == backdrop) }
+                        }
+                    } label: {
+                        Image(systemName: "photo.artframe").font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
+                    }
+                    .menuStyle(.button).buttonStyle(.glass).buttonBorderShape(.circle).menuIndicator(.hidden).fixedSize()
+                    .help("Background: frame the shot on a gradient, for sharing")
+                }
+            }
             Spacer()
             Button("Undo") { model.undo() }
                 .buttonStyle(.glass).disabled(model.marks.isEmpty)
@@ -367,16 +459,21 @@ struct MarkupView: View {
                 model.commitText()
                 model.render().map(onCopy)
             }
-            .buttonStyle(.glass).disabled(model.marks.isEmpty)
+            .buttonStyle(.glass).disabled(!model.hasChanges)
             Button("Save Copy") {
                 model.commitText()
                 model.render().map(onSave)
             }
-            .buttonStyle(.glassProminent).tint(terracotta).disabled(model.marks.isEmpty)
+            .buttonStyle(.glassProminent).tint(terracotta).disabled(!model.hasChanges)
             // While typing, Return finishes the text instead.
             .keyboardShortcut(model.editing == nil ? .defaultAction : nil)
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private func checked(_ title: String, _ on: Bool) -> some View {
+        if on { Label(title, systemImage: "checkmark") } else { Text(title) }
     }
 
     @ViewBuilder

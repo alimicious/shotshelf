@@ -1,13 +1,14 @@
 import AppKit
 import SwiftUI
+import VisionKit
 
 /// A screenshot kept on screen above your other windows, to refer to while you work. It sits in a
 /// thin glass frame: drag it to move it, pinch or drag an edge to resize it, hover for its controls
-/// (see-through, copy, close), double-click to open it, and press Esc to close it.
+/// (Live Text, see-through, copy, close), double-click to open it, and press Esc to close it.
 @MainActor
 final class FloatingShot: NSObject, NSWindowDelegate {
     let window: FloatingPanel
-    private let model = FloatModel()
+    let model = FloatModel()
     private let onClose: (FloatingShot) -> Void
     /// The frame when a pinch began, which the pinch scales.
     private var pinchStart: NSRect?
@@ -100,6 +101,11 @@ final class FloatModel: ObservableObject {
     var open: () -> Void = {}
     var close: () -> Void = {}
     var pinch: (CGFloat?) -> Void = { _ in }
+    /// Live Text is on: the shot's text can be selected, its links opened and its subject lifted,
+    /// and dragging selects instead of moving the window.
+    @Published var liveText = false
+    /// What Live Text found, kept so turning it back on is instant.
+    var analysis: ImageAnalysis?
 }
 
 private struct FloatingShotView: View {
@@ -108,6 +114,7 @@ private struct FloatingShotView: View {
 
     var body: some View {
         Image(nsImage: image).resizable().scaledToFit()
+            .overlay { if model.liveText { LiveTextOverlay(image: image, model: model) } }
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .padding(6)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -125,6 +132,13 @@ private struct FloatingShotView: View {
     private var controls: some View {
         GlassEffectContainer {
             HStack(spacing: 0) {
+                if ImageAnalyzer.isSupported {
+                    control(model.liveText ? "text.viewfinder.fill" : "text.viewfinder",
+                            help: model.liveText ? "Done selecting text, so dragging moves the shot again"
+                                                 : "Live Text: select text, open links or lift the subject",
+                            action: { model.liveText.toggle() })
+                    .foregroundStyle(model.liveText ? AnyShapeStyle(Color(nsColor: ShelfIcon.terracotta)) : AnyShapeStyle(.primary))
+                }
                 control(model.seeThrough ? "circle.fill" : "circle.lefthalf.filled",
                         help: model.seeThrough ? "Make solid" : "See through", action: model.toggleSeeThrough)
                 control(model.copied ? "checkmark" : "doc.on.doc", help: "Copy image (⌘C)", action: model.copy)
@@ -145,6 +159,36 @@ private struct FloatingShotView: View {
         .buttonStyle(.borderless)
         .help(help)
     }
+}
+
+/// Apple's Live Text over a floating shot, analysed on your Mac: select and copy text, open links
+/// and codes, look things up, and right-click to copy the subject. It takes the shot's clicks while
+/// it's on, which is why it's a mode.
+private struct LiveTextOverlay: NSViewRepresentable {
+    let image: NSImage
+    let model: FloatModel
+
+    func makeNSView(context: Context) -> ImageAnalysisOverlayView {
+        let overlay = ImageAnalysisOverlayView()
+        overlay.preferredInteractionTypes = .automatic
+        if let analysis = model.analysis {
+            overlay.analysis = analysis
+            overlay.selectableItemsHighlighted = true
+        } else {
+            Task { @MainActor in
+                let configuration = ImageAnalyzer.Configuration([.text, .machineReadableCode, .visualLookUp])
+                guard let analysis = try? await ImageAnalyzer().analyze(image, orientation: .up, configuration: configuration)
+                else { return }
+                model.analysis = analysis
+                overlay.analysis = analysis
+                // Show what can be selected, the way Preview does when Live Text turns on.
+                overlay.selectableItemsHighlighted = true
+            }
+        }
+        return overlay
+    }
+
+    func updateNSView(_ overlay: ImageAnalysisOverlayView, context: Context) {}
 }
 
 /// A floating shot's window: borderless glass above other apps' windows, on every Space, resizable

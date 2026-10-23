@@ -1,4 +1,5 @@
 import SwiftUI
+import Translation
 
 private let terracotta = Color(nsColor: ShelfIcon.terracotta)
 private let hoverSpring = Animation.spring(duration: 0.28, bounce: 0.25)
@@ -10,6 +11,7 @@ struct ShelfView: View {
     @AppStorage(Prefs.iconAnimation) private var iconAnimation = true
     @AppStorage(Prefs.autoUpdates) private var autoUpdates = true
     @AppStorage(Prefs.searchEyes) private var searchEyes = true
+    @AppStorage(Prefs.capturePopup) private var capturePopup = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -31,9 +33,7 @@ struct ShelfView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
-                .frame(width: 34, height: 34)
-                .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+            OrbMark(size: 34, animated: store.panelVisible)
             // The small panel has no room beside the buttons, so its Update pill takes the subtitle's place.
             let compact = store.panelSize == .small
             VStack(alignment: .leading, spacing: 1) {
@@ -99,8 +99,10 @@ struct ShelfView: View {
             }
         }
         .overlay { if store.shots.isEmpty { emptyState } }
-        .overlay(alignment: .top) { if let toast = store.toast { toastView(toast) } }
+        .overlay(alignment: .top) { if let toast = store.toast { ToastCapsule(toast: toast, store: store).padding(.top, 10) } }
         .animation(hoverSpring, value: store.toast)
+        // Translate Text… opens the system's own translation popover, which works on your Mac.
+        .translationPresentation(isPresented: $store.showTranslation, text: store.translation)
     }
 
     @ViewBuilder
@@ -115,25 +117,10 @@ struct ShelfView: View {
         }
     }
 
-    private func toastView(_ toast: Toast) -> some View {
-        HStack(spacing: 10) {
-            Label(toast.text, systemImage: toast.symbol).lineLimit(1)
-            if toast.undo {
-                Button("Undo") { store.undoTrash() }
-                    .buttonStyle(.borderless).foregroundStyle(terracotta)
-                    .help("Put it back (⌘Z)")
-            }
-        }
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal, 12).padding(.vertical, 6)
-        .glassEffect(toast.undo ? .regular.interactive() : .regular, in: .capsule)
-        .padding(.top, 10)
-        .transition(.move(edge: .top).combined(with: .opacity))
-    }
-
     private var emptyState: some View {
         VStack(spacing: 4) {
             if store.folderReadable {
+                OrbMark(size: 52, animated: store.panelVisible).padding(.bottom, 6)
                 Text("No screenshots yet").font(.callout.weight(.semibold))
                 Text("Press ⇧⌘4 to grab one").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -176,7 +163,8 @@ struct ShelfView: View {
             if !store.selection.isEmpty {
                 selectionBar
             } else if store.confirmingTidy {
-                Text("Move \(count) older shot\(count == 1 ? "" : "s") to the Trash?").font(.caption.weight(.medium))
+                Text(tidyQuestion(older: count - store.tidyDuplicateCount, duplicates: store.tidyDuplicateCount))
+                    .font(.caption.weight(.medium)).lineLimit(1).minimumScaleFactor(0.75)
                 Spacer()
                 Button("Cancel") { store.confirmingTidy = false }
                     .buttonStyle(.glass).controlSize(.small)
@@ -191,12 +179,22 @@ struct ShelfView: View {
                 }
                 .buttonStyle(.glass).controlSize(.small)
                 .disabled(count == 0)
-                .help("Move screenshots from before today to the Trash. Pinned ones stay.")
+                .help("Move screenshots from before today, and near-copies of newer ones, to the Trash. Pinned ones stay.")
             }
         }
         .frame(height: 28)
         .animation(hoverSpring, value: store.confirmingTidy)
         .animation(hoverSpring, value: store.selection.isEmpty)
+    }
+
+    private func tidyQuestion(older: Int, duplicates: Int) -> String {
+        let olderText = "\(older) older shot\(older == 1 ? "" : "s")"
+        let duplicateText = "\(duplicates) duplicate\(duplicates == 1 ? "" : "s")"
+        switch (older, duplicates) {
+        case (_, 0): return "Move \(olderText) to the Trash?"
+        case (0, _): return "Move \(duplicateText) to the Trash?"
+        default: return "Move \(olderText) and \(duplicateText) to the Trash?"
+        }
     }
 
     /// What you can do with the shots you've picked. The stack on the left drags them all at once.
@@ -254,12 +252,13 @@ struct ShelfView: View {
                 ForEach(PanelSize.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            ShortcutRow(title: "Open shelf", slot: .open, store: store)
-            ShortcutRow(title: "Search screenshots", slot: .search, store: store)
-            Text(store.recording == nil ? "Shortcuts work from any app." : "Press the new shortcut. Esc cancels, Delete removes it.")
-                .font(.caption).foregroundStyle(.secondary)
+            ForEach(ShortcutSlot.allCases, id: \.self) { ShortcutRow(title: $0.title, slot: $0, store: store) }
+            Text(store.recording == nil ? "Shortcuts work from any app. The newest-shot ones act without opening the shelf."
+                                        : "Press the new shortcut. Esc cancels, Delete removes it.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Toggle("Name new shots from their text", isOn: $smartNames)
             Toggle("Animate new shots in the menu bar", isOn: $iconAnimation)
+            Toggle("Pop-up after each capture", isOn: $capturePopup)
             Toggle("Eye buttons in search", isOn: $searchEyes)
             Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
             Divider()
@@ -377,6 +376,7 @@ private struct ShotCell: View {
                     .frame(width: 18, height: 18)
                     .glassEffect(.regular.tint(terracotta), in: .circle)
             }
+            if shot.isVideo { RecordingBadge(duration: store.durations[shot.url]) }
             if shot.date > store.freshSince {
                 Circle().fill(terracotta).frame(width: 8, height: 8)
                     .overlay(Circle().strokeBorder(.white.opacity(0.9), lineWidth: 1.2))
@@ -395,11 +395,16 @@ private struct ShotCell: View {
     private var actions: some View {
         GlassEffectContainer {
             HStack(spacing: 0) {
-                CellButton(systemName: "doc.on.doc", help: "Copy image (⌘C)") { store.copy(shot) }
-                CellButton(systemName: "text.viewfinder", help: "Copy text (T)") { store.copyText(shot) }
-                // A link, email address or QR code found in the shot gets a button of its own.
-                if let link = store.links(for: shot).first {
-                    CellButton(systemName: link.symbol, help: link.title) { store.use(link) }
+                if shot.isVideo {
+                    CellButton(systemName: "doc.on.doc", help: "Copy recording (⌘C)") { store.copy(shot) }
+                    CellButton(systemName: "photo.stack", help: "Trim or make a GIF (R)") { store.editRecording(shot) }
+                } else {
+                    CellButton(systemName: "doc.on.doc", help: "Copy image (⌘C)") { store.copy(shot) }
+                    CellButton(systemName: "text.viewfinder", help: "Copy text (T)") { store.copyText(shot) }
+                    // A link, email address or QR code found in the shot gets a button of its own.
+                    if let link = store.links(for: shot).first {
+                        CellButton(systemName: link.symbol, help: link.title) { store.use(link) }
+                    }
                 }
                 CellButton(systemName: "eye", help: "Quick Look (Space)") { store.quickLook(shot) }
                 Menu { ShotMenu(shot: shot, store: store) } label: {
@@ -460,8 +465,15 @@ struct ShotMenu: View {
 
     @ViewBuilder
     private var single: some View {
-        Button("Copy Image", systemImage: "doc.on.doc") { store.copy(shot) }
-        Button("Copy Text", systemImage: "text.viewfinder") { store.copyText(shot) }
+        if shot.isVideo {
+            Button("Copy Recording", systemImage: "doc.on.doc") { store.copy(shot) }
+        } else {
+            Button("Copy Image", systemImage: "doc.on.doc") { store.copy(shot) }
+            Button("Copy Text", systemImage: "text.viewfinder") { store.copyText(shot) }
+            Button("Copy with Background", systemImage: "photo.artframe") { store.copyWithBackdrop(shot) }
+            Button("Copy Subject", systemImage: "person.and.background.dotted") { store.copySubject(shot) }
+        }
+        Divider()
         Button("Quick Look", systemImage: "eye") {
             if let results {
                 store.quickLook(shot, among: results, follow: { store.searchSelection = $0 })
@@ -469,7 +481,11 @@ struct ShotMenu: View {
                 store.quickLook(shot)
             }
         }
-        Button("Float on Screen", systemImage: "pip.enter") { store.float(shot) }
+        if shot.isVideo {
+            Button("Trim or Make a GIF…", systemImage: "photo.stack") { store.editRecording(shot) }
+        } else {
+            Button("Float on Screen", systemImage: "pip.enter") { store.float(shot) }
+        }
         Button("Share…", systemImage: "square.and.arrow.up") { store.share([shot]) }
         let links = store.links(for: shot)
         if !links.isEmpty {
@@ -482,8 +498,12 @@ struct ShotMenu: View {
         Button(store.isPinned(shot) ? "Unpin" : "Pin", systemImage: store.isPinned(shot) ? "pin.slash" : "pin") {
             store.togglePin(shot)
         }
-        Button("Markup and Redact…", systemImage: "pencil.tip.crop.circle") { store.markup(shot) }
-        Button("Rename from Text", systemImage: "character.cursor.ibeam") { store.smartRename(shot) }
+        if !shot.isVideo {
+            Button("Markup and Redact…", systemImage: "pencil.tip.crop.circle") { store.markup(shot) }
+            Button("Redact Private Info…", systemImage: "wand.and.sparkles") { store.markup(shot, redactPrivate: true) }
+            Button("Translate Text…", systemImage: "translate") { store.translate(shot) }
+            Button("Rename from Text", systemImage: "character.cursor.ibeam") { store.smartRename(shot) }
+        }
         if !store.folders.isEmpty {
             Menu("Move to", systemImage: "folder") {
                 ForEach(store.folders, id: \.self) { folder in
@@ -505,6 +525,11 @@ struct SelectionMenu: View {
 
     var body: some View {
         let allPinned = shots.allSatisfy(store.isPinned)
+        if shots.filter({ !$0.isVideo }).count > 1 {
+            Button("Combine Side by Side", systemImage: "rectangle.split.3x1") { store.combine(shots, stacked: false) }
+            Button("Combine Stacked", systemImage: "rectangle.split.1x2") { store.combine(shots, stacked: true) }
+            Divider()
+        }
         Button(allPinned ? "Unpin \(shots.count)" : "Pin \(shots.count)", systemImage: allPinned ? "pin.slash" : "pin") {
             store.togglePin(shots)
         }
@@ -614,9 +639,7 @@ private struct UpdateView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
-                    .frame(width: 34, height: 34)
-                    .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
+                OrbMark(size: 34, animated: store.panelVisible)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ShotShelf \(update.version)").font(.headline)
                     Text("You have \(Updater.currentVersion)").font(.caption).foregroundStyle(.secondary)
@@ -686,14 +709,18 @@ private struct WelcomeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Image(nsImage: ShelfIcon.image(size: 22)).renderingMode(.template).foregroundStyle(terracotta)
-                    .frame(width: 34, height: 34)
-                    .glassEffect(.regular.tint(terracotta.opacity(0.18)), in: .rect(cornerRadius: 10))
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Welcome to ShotShelf").font(.headline)
-                    Text("Your latest screenshots, one click away").font(.caption).foregroundStyle(.secondary)
+            // The orb, big, over the title; the small panel keeps it beside the title to fit.
+            if store.panelSize == .small {
+                HStack(spacing: 12) {
+                    OrbMark(size: 44, animated: store.panelVisible)
+                    titles(alignment: .leading)
                 }
+            } else {
+                VStack(spacing: 12) {
+                    OrbMark(size: 88, animated: store.panelVisible)
+                    titles(alignment: .center)
+                }
+                .frame(maxWidth: .infinity)
             }
             VStack(alignment: .leading, spacing: 14) {
                 if let shortcut = store.shortcut(for: .open) {
@@ -719,6 +746,13 @@ private struct WelcomeView: View {
         .transition(.opacity)
     }
 
+    private func titles(alignment: HorizontalAlignment) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text("Welcome to ShotShelf").font(.headline)
+            Text("Your latest screenshots, one click away").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private func row(_ symbol: String, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: symbol).font(.system(size: 12, weight: .semibold)).foregroundStyle(terracotta)
@@ -727,6 +761,21 @@ private struct WelcomeView: View {
             Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 4)
         }
+    }
+}
+
+/// Marks a screen recording's tile: a play symbol and how long it runs.
+struct RecordingBadge: View {
+    let duration: Double?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "play.fill").font(.system(size: 7, weight: .bold))
+            if let duration { Text(Recording.label(duration)).font(.system(size: 9, weight: .semibold)).monospacedDigit() }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 6).frame(height: 18)
+        .glassEffect(.regular.tint(.black.opacity(0.35)), in: .capsule)
     }
 }
 
