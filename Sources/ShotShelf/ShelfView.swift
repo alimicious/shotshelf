@@ -236,9 +236,40 @@ struct ShelfView: View {
         }
     }
 
+    /// Settings in three tabs, so the popover stays a comfortable height: General, Shortcuts (all
+    /// five together) and Updates, with the folder and Quit under all of them.
     private var settings: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Picker("Settings", selection: $store.settingsTab) {
+                ForEach(SettingsTab.allCases) { tab in
+                    // A dot on Updates when there's one waiting.
+                    Text(tab == .updates && store.availableUpdate != nil ? "Updates •" : tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            switch store.settingsTab {
+            case .general: generalSettings
+            case .shortcuts: shortcutSettings
+            case .updates: updateSettings
+            }
+            Divider()
+            HStack {
+                Text(store.folder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.glass).controlSize(.small)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+
+    private var generalSettings: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Settings").font(.headline)
+            Picker("Size", selection: $store.panelSize) {
+                ForEach(PanelSize.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
             Picker("Auto-tidy", selection: $autoTidyDays) {
                 Text("Off").tag(0)
                 Text("After 1 day").tag(1)
@@ -248,20 +279,38 @@ struct ShelfView: View {
             }
             Text("Moves unpinned screenshots to the Trash once they're this old.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Picker("Size", selection: $store.panelSize) {
-                ForEach(PanelSize.allCases) { Text($0.rawValue).tag($0) }
+            SettingsSection("New screenshots") {
+                Toggle("Name them from their text", isOn: $smartNames)
+                Toggle("Animate the menu bar icon", isOn: $iconAnimation)
+                Toggle("Show a pop-up", isOn: $capturePopup)
             }
-            .pickerStyle(.segmented)
-            ForEach(ShortcutSlot.allCases, id: \.self) { ShortcutRow(title: $0.title, slot: $0, store: store) }
-            Text(store.recording == nil ? "Shortcuts work from any app. The newest-shot ones act without opening the shelf."
+            SettingsSection("App") {
+                Toggle("Eye buttons in search", isOn: $searchEyes)
+                Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
+            }
+        }
+    }
+
+    private var shortcutSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsSection("Shelf") {
+                ForEach(ShortcutSlot.allCases.filter { !$0.actsOnNewest }, id: \.self) {
+                    ShortcutRow(title: $0.label, slot: $0, store: store)
+                }
+            }
+            SettingsSection("Newest screenshot") {
+                ForEach(ShortcutSlot.allCases.filter(\.actsOnNewest), id: \.self) {
+                    ShortcutRow(title: $0.label, slot: $0, store: store)
+                }
+            }
+            Text(store.recording == nil ? "These work from any app. The newest-screenshot ones act without opening the shelf."
                                         : "Press the new shortcut. Esc cancels, Delete removes it.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Toggle("Name new shots from their text", isOn: $smartNames)
-            Toggle("Animate new shots in the menu bar", isOn: $iconAnimation)
-            Toggle("Pop-up after each capture", isOn: $capturePopup)
-            Toggle("Eye buttons in search", isOn: $searchEyes)
-            Toggle("Launch at login", isOn: Binding(get: { store.launchAtLogin }, set: { store.setLaunchAtLogin($0) }))
-            Divider()
+        }
+    }
+
+    private var updateSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
             Toggle("Check for updates automatically", isOn: $autoUpdates)
             HStack {
                 Text(updateStatusText).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -276,17 +325,8 @@ struct ShelfView: View {
                 }
             }
             Text("Checks GitHub once a day. Nothing about you or your screenshots is sent.")
-                .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Divider()
-            HStack {
-                Text(store.folder.path.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                Spacer()
-                Button("Quit") { NSApp.terminate(nil) }.buttonStyle(.glass).controlSize(.small)
-            }
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(16)
-        .frame(width: 300)
     }
 }
 
@@ -670,6 +710,25 @@ private struct UpdateView: View {
         }
         .padding(16)
         .frame(width: 300)
+    }
+}
+
+/// A small heading over a group of settings.
+private struct SettingsSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            content
+        }
+        .padding(.top, 2)
     }
 }
 

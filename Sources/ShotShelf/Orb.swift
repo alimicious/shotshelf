@@ -84,8 +84,8 @@ private enum OrbGrain {
     }()
 }
 
-/// The orb with the polaroid on it. Big ones carry it on a white disc, like a button; small ones
-/// (the header) just set it on the orb in white.
+/// The orb with the polaroid cut out of it, so whatever's behind (the glass, the page) shows
+/// through the polaroid's shape. Small ones get a bigger polaroid so the cut stays legible.
 struct OrbMark: View {
     let size: CGFloat
     var animated = true
@@ -94,21 +94,17 @@ struct OrbMark: View {
     var body: some View {
         GradientOrb(animated: animated, time: time)
             .frame(width: size, height: size)
-            .overlay {
-                if size >= 64 {
-                    Circle().fill(.white)
-                        .frame(width: size * 0.36, height: size * 0.36)
-                        .shadow(color: .black.opacity(0.18), radius: size * 0.04, y: size * 0.015)
-                        .overlay {
-                            Image(nsImage: ShelfIcon.image(size: size * 0.2)).renderingMode(.template)
-                                .foregroundStyle(Color(white: 0.13))
-                        }
-                } else {
-                    Image(nsImage: ShelfIcon.image(size: size * 0.56)).renderingMode(.template)
-                        .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.25), radius: 1.5, y: 0.5)
-                }
-            }
             .shadow(color: Color(red: 0.8, green: 0.36, blue: 0.22).opacity(0.3), radius: size * 0.12, y: size * 0.05)
+            // Cut after the glow, so none of it shows inside the polaroid; the mask reaches past the
+            // orb's frame to keep the glow around the outside.
+            .mask {
+                Rectangle()
+                    .padding(-size * 0.5)
+                    .overlay {
+                        Image(nsImage: ShelfIcon.image(size: size * (size >= 64 ? 0.42 : 0.56))).renderingMode(.template)
+                            .blendMode(.destinationOut)
+                    }
+                    .compositingGroup()
+            }
     }
 }

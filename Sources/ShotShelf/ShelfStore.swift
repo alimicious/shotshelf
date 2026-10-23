@@ -22,6 +22,20 @@ enum ShortcutSlot: CaseIterable {
         }
     }
 
+    /// Its name in Settings, under its group's heading.
+    var label: String {
+        switch self {
+        case .open: return "Open"
+        case .search: return "Search"
+        case .copyNewest: return "Copy"
+        case .copyNewestText: return "Copy text"
+        case .floatNewest: return "Float on screen"
+        }
+    }
+
+    /// One of the three that act on the newest screenshot.
+    var actsOnNewest: Bool { ![.open, .search].contains(self) }
+
     var prefsKey: String {
         switch self {
         case .open: return Prefs.openShortcut
@@ -31,6 +45,12 @@ enum ShortcutSlot: CaseIterable {
         case .floatNewest: return Prefs.floatNewestShortcut
         }
     }
+}
+
+/// The settings popover's tabs.
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general = "General", shortcuts = "Shortcuts", updates = "Updates"
+    var id: String { rawValue }
 }
 
 struct Toast: Equatable {
@@ -91,6 +111,9 @@ final class ShelfStore: ObservableObject {
     @Published var confirmingTidy = false
     @Published var showSettings = false {
         didSet { if !showSettings { cancelRecording() } }
+    }
+    @Published var settingsTab = SettingsTab.general {
+        didSet { if settingsTab != .shortcuts { cancelRecording() } }
     }
     /// Small, medium or large: bigger panels show bigger tiles and more of them.
     @Published var panelSize: PanelSize {

@@ -387,6 +387,17 @@ struct ShotShelfApp: App {
             controller.toggle()
             await pause(1)
             snapshot(store.panelWindow, "opened")
+            for tab in SettingsTab.allCases {
+                store.settingsTab = tab
+                store.showSettings = true
+                await pause(0.8)
+                let popover = NSApp.windows.first { $0.isVisible && $0.className.contains("Popover") }
+                print("settings \(tab.rawValue): \(popover.map { "\(Int($0.frame.width))×\(Int($0.frame.height))" } ?? "not open")")
+                snapshot(popover, "settings-\(tab.rawValue)")
+            }
+            store.showSettings = false
+            store.settingsTab = .general
+            await pause(0.5)
             store.selectAll(Array(store.visible))
             print("selected all: \(store.selection.count), menu acts on \(store.group(for: store.shots[0]).count)")
             store.togglePin(store.selectedShots)
