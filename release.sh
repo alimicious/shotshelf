@@ -29,7 +29,9 @@ if ! security find-generic-password -s "$KEY_NAME" >/dev/null 2>&1; then
 fi
 
 ./build.sh --universal
-if ! codesign -dv build/ShotShelf.app 2>&1 | grep -q 'flags=.*runtime'; then
+# Read codesign's whole output before matching: piped into `grep -q`, which stops at the first
+# match, codesign fails writing the rest and pipefail turns that into a refusal every time.
+if [[ $(codesign -dv build/ShotShelf.app 2>&1) != *"flags="*"(runtime)"* ]]; then
     echo "The app isn't signed with the hardened runtime; not publishing." >&2
     exit 1
 fi
