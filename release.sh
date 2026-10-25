@@ -29,6 +29,10 @@ if ! security find-generic-password -s "$KEY_NAME" >/dev/null 2>&1; then
 fi
 
 ./build.sh --universal
+if ! codesign -dv build/ShotShelf.app 2>&1 | grep -q 'flags=.*runtime'; then
+    echo "The app isn't signed with the hardened runtime; not publishing." >&2
+    exit 1
+fi
 rm -f "$ZIP"
 # Leave out macOS file metadata (extended attributes) so the zip carries nothing about this Mac.
 ditto -c -k --norsrc --noextattr --keepParent build/ShotShelf.app "$ZIP"
@@ -41,7 +45,7 @@ gh release create "$TAG" "$ZIP" "$ZIP.sig" --target "$(git rev-parse HEAD)" --ti
 A Liquid Glass menu bar shelf for your screenshots. Your newest shot shows up big with the six before it underneath: drag one into any app to share it, onto another shot to rearrange, or onto a folder chip to file it away.
 
 - **Copy the image or the text in it** (read on your Mac with Apple's Vision), Quick Look, pin, share, or send to the Trash, with Undo.
-- **Mark up** with arrows, boxes, highlights and text, or pixelate private bits, and save a copy.
+- **Mark up** with arrows, boxes, highlights and text, or black out private bits, and save a copy.
 - **Float a shot on screen** above your other windows, to refer to while you work.
 - **Links, email addresses and QR codes** in a shot get a button to open or copy them.
 - **Select several** with ⌘-click to copy, share, file, combine, drag or trash them together.

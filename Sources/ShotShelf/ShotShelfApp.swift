@@ -36,16 +36,8 @@ struct ShotShelfApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     init() {
-        // Debug flags: `--dump` lists the screenshots found, `--render <file.png> [--size small|medium|large]
-        // [--extras] [--welcome] [--select] [--undo-toast]` saves the panel, `--render-markup <in.png> <out.png>`
-        // draws one of each mark on a shot, `--selftest` opens the panel and Quick Look on screen and reports
-        // what happened, and `--selftest-actions` tries trash and undo, selection, links, floating and markup.
-        // `--folder <dir>` points any of them at sample shots instead of your screenshot folder.
         // Build flag: `--iconset <dir>` writes the app icon PNGs (see build.sh).
         let args = CommandLine.arguments
-        if let i = args.firstIndex(of: "--folder"), i + 1 < args.count {
-            ShotScanner.testFolder = URL(fileURLWithPath: args[i + 1], isDirectory: true)
-        }
         if let i = args.firstIndex(of: "--iconset"), i + 1 < args.count {
             do {
                 try AppIcon.writeIconset(to: URL(fileURLWithPath: args[i + 1]))
@@ -54,6 +46,18 @@ struct ShotShelfApp: App {
                 print("Couldn't write iconset: \(error)")
                 exit(1)
             }
+        }
+        #if DEBUG
+        // Debug flags, in debug builds only (`swift build`, then `.build/debug/ShotShelf --dump`): they
+        // read shots with ShotShelf's own Desktop and Screen Recording access and write wherever they're
+        // told, so in a release build any app could launch it with them to borrow that access.
+        // `--dump` lists the screenshots found, `--render <file.png> [--size small|medium|large]
+        // [--extras] [--welcome] [--select] [--undo-toast]` saves the panel, `--render-markup <in.png> <out.png>`
+        // draws one of each mark on a shot, `--selftest` opens the panel and Quick Look on screen and reports
+        // what happened, and `--selftest-actions` tries trash and undo, selection, links, floating and markup.
+        // `--folder <dir>` points any of them at sample shots instead of your screenshot folder.
+        if let i = args.firstIndex(of: "--folder"), i + 1 < args.count {
+            ShotScanner.testFolder = URL(fileURLWithPath: args[i + 1], isDirectory: true)
         }
         if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
             Self.renderPanel(to: args[i + 1])
@@ -113,6 +117,7 @@ struct ShotShelfApp: App {
         }
         if args.contains("--selftest") { Self.selfTest() }
         if args.contains("--selftest-actions") { Self.selfTestActions() }
+        #endif
 
         // Release flags (see release.sh): `--generate-update-key` prints a new private key then its
         // public key, `--sign-update <zip>` signs with the private key read from stdin,
@@ -169,6 +174,7 @@ struct ShotShelfApp: App {
         exit(0)
     }
 
+    #if DEBUG
     @MainActor private static func renderPanel(to path: String) {
         let store = ShelfStore(preview: ShotScanner.scan(ShotScanner.folder) ?? [])
         store.hovered = store.shots.first?.url  // show the hover actions on one cell
@@ -543,6 +549,7 @@ struct ShotShelfApp: App {
             exit(0)
         }
     }
+    #endif
 
     var body: some Scene {
         // The menu bar item and panel are AppKit (see StatusController); SwiftUI just needs a scene.

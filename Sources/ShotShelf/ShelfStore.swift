@@ -254,6 +254,9 @@ final class ShelfStore: ObservableObject {
             }
             return consumed ? nil : event
         }
+        // Save right away, so text carried over from an older version's plain files is kept sealed
+        // rather than only in memory until the next screenshot.
+        saveTexts()
         if !showWelcome { start() }
     }
 
@@ -756,7 +759,7 @@ final class ShelfStore: ObservableObject {
 
     // MARK: - Markup
 
-    /// Opens the markup editor: arrows, boxes, highlights, text and pixelated redactions, saved as a
+    /// Opens the markup editor: arrows, boxes, highlights, text and blacked-out redactions, saved as a
     /// copy, optionally framed on a background. With `redactPrivate`, it starts by finding and
     /// redacting private details. Recordings open their own editor instead.
     func markup(_ shot: Shot, redactPrivate: Bool = false) {
@@ -957,12 +960,12 @@ final class ShelfStore: ObservableObject {
             let dest = ShotScanner.uniqueURL(in: folder, name: name, ext: shot.url.pathExtension)
             guard (try? FileManager.default.moveItem(at: shot.url, to: dest)) != nil else { continue }
             pinned.remove(shot.url.path)
-            texts[shot.url.path] = nil
-            codes[shot.url.path] = nil
+            forgetText(of: shot.url)
             selection.remove(shot.url)
             moved += 1
         }
         savePinned()
+        saveTexts()
         if let popup, shots.contains(popup) { dismissPopup() }
         switch moved {
         case 0: showToast("Couldn't move \(shots.count == 1 ? "it" : "them") to \(folder.lastPathComponent)", symbol: "exclamationmark.triangle")
@@ -1011,12 +1014,22 @@ final class ShelfStore: ObservableObject {
             guard (try? FileManager.default.trashItem(at: shot.url, resultingItemURL: &inTrash)) != nil,
                   let inTrash else { continue }
             let wasPinned = pinned.remove(shot.url.path) != nil
+            // Its text leaves the cache with it; Undo reads it again.
+            forgetText(of: shot.url)
             moved.append(Trashed(original: shot.url, inTrash: inTrash as URL, wasPinned: wasPinned))
         }
         savePinned()
+        saveTexts()
         if let popup, moved.contains(where: { $0.original == popup.url }) { dismissPopup() }
         Task { await refresh() }
         return moved
+    }
+
+    /// Drops what was read from a shot (text, codes, fingerprint) once it leaves the shelf.
+    private func forgetText(of url: URL) {
+        texts[url.path] = nil
+        codes[url.path] = nil
+        fingerprints[url.path] = nil
     }
 
     // MARK: - Selection
@@ -1571,7 +1584,8 @@ final class ShelfStore: ObservableObject {
     }
 
     /// Recognised text and codes live in Application Support so search and quick actions work
-    /// straight away after a relaunch. Tests on sample shots keep theirs beside the samples.
+    /// straight away after a relaunch, sealed with a Keychain key (see `CacheVault`). Tests on
+    /// sample shots keep theirs as plain JSON beside the samples.
     private static let supportFolder: URL = {
         let dir = ShotScanner.testFolder?.appendingPathComponent(".ShotShelf", isDirectory: true)
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1579,30 +1593,40 @@ final class ShelfStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
-    private static var textsURL: URL { supportFolder.appendingPathComponent("text.json") }
-    private static var codesURL: URL { supportFolder.appendingPathComponent("codes.json") }
-    private static var fingerprintsURL: URL { supportFolder.appendingPathComponent("fingerprints.json") }
+    private static var sealsCache: Bool { ShotScanner.testFolder == nil }
 
-    private static func loadTexts() -> [String: String] {
-        guard let data = try? Data(contentsOf: textsURL) else { return [:] }
-        return (try? JSONDecoder().decode([String: String].self, from: data)) ?? [:]
+    private static func cacheURL(_ name: String) -> URL {
+        supportFolder.appendingPathComponent(name + (sealsCache ? ".sealed" : ".json"))
     }
 
-    private static func loadCodes() -> [String: [String]] {
-        guard let data = try? Data(contentsOf: codesURL) else { return [:] }
-        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    private static func loadTexts() -> [String: String] { loadCache("text") ?? [:] }
+    private static func loadCodes() -> [String: [String]] { loadCache("codes") ?? [:] }
+    private static func loadFingerprints() -> [String: ShotTools.Fingerprint] { loadCache("fingerprints") ?? [:] }
+
+    /// One cached file, opened. A plain one left by an older version is read once and deleted, so
+    /// the text is only ever kept on disk sealed.
+    private static func loadCache<T: Decodable>(_ name: String) -> T? {
+        let plain = supportFolder.appendingPathComponent(name + ".json")
+        if sealsCache, let legacy = try? Data(contentsOf: plain) {
+            try? FileManager.default.removeItem(at: plain)
+            return try? JSONDecoder().decode(T.self, from: legacy)
+        }
+        guard let stored = try? Data(contentsOf: cacheURL(name)),
+              let data = sealsCache ? CacheVault.open(stored) : stored else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
     }
 
-    private static func loadFingerprints() -> [String: ShotTools.Fingerprint] {
-        guard let data = try? Data(contentsOf: fingerprintsURL) else { return [:] }
-        return (try? JSONDecoder().decode([String: ShotTools.Fingerprint].self, from: data)) ?? [:]
-    }
-
-    /// Saves the text, codes and fingerprints worked out so far.
+    /// Saves the text, codes and fingerprints worked out so far: sealed, or not at all.
     private func saveTexts() {
         guard !isPreview else { return }
-        try? JSONEncoder().encode(texts).write(to: Self.textsURL, options: .atomic)
-        try? JSONEncoder().encode(codes).write(to: Self.codesURL, options: .atomic)
-        try? JSONEncoder().encode(fingerprints).write(to: Self.fingerprintsURL, options: .atomic)
+        Self.saveCache(texts, "text")
+        Self.saveCache(codes, "codes")
+        Self.saveCache(fingerprints, "fingerprints")
+    }
+
+    private static func saveCache<T: Encodable>(_ value: T, _ name: String) {
+        guard let json = try? JSONEncoder().encode(value),
+              let data = sealsCache ? CacheVault.seal(json) : json else { return }
+        try? data.write(to: cacheURL(name), options: .atomic)
     }
 }

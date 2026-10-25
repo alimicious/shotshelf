@@ -17,13 +17,16 @@ first for what it does. This file covers how to work on it.
   fingerprints, combining, subject lifting, gradient backgrounds), `Recording.swift` (screen
   recordings: frames, GIF and trimmed exports, the recording editor), `CapturePopup.swift` (the
   after-capture pop-up and the toast capsule), `Orb.swift` (the animated gradient orb, the app's
-  mark), `ShelfIcon.swift` (menu bar icon and its new-shot animation), `AppIcon.swift`.
+  mark), `ShelfIcon.swift` (menu bar icon and its new-shot animation), `AppIcon.swift`,
+  `CacheVault.swift` (seals the text/QR/fingerprint cache with a Keychain key).
 
 ## Toolchain quirks (this Mac has only the Command Line Tools)
 
 - `@State` and `#Preview` don't compile (no macro plugin). Keep state in the `ShelfStore`
   ObservableObject. `@AppStorage`, `@FocusState`, `@ObservedObject` and `@Environment` work.
-- No screen access for checking UI. Use the debug flags instead:
+- No screen access for checking UI. Use the debug flags instead. They're compiled into debug builds
+  only (`#if DEBUG`), so run them from `swift build` as `.build/debug/ShotShelf <flag>`, never from
+  `build/ShotShelf.app` (a release build ignores them):
   - `--render out.png [--size small|medium|large] [--extras]`: the shelf, via ImageRenderer. It can't
     draw glass, blur, scroll views or native buttons (they come out blank or as placeholders).
   - `--render-bar out.png`, `--render-icons out.png`: the capture bar, the sweep and the icons.
@@ -38,7 +41,9 @@ first for what it does. This file covers how to work on it.
   - `--selftest-actions --folder <dir>`: trash and undo, selection, links and QR codes, a floating shot
     and the markup editor, on sample shots (it moves them to the Trash and back, so never point it at
     real ones). `--folder` works with the other flags too. Builds run from `.build` keep their settings
-    apart from the installed app's, and `--folder` keeps the text index beside the samples.
+    apart from the installed app's, and `--folder` keeps the text index beside the samples (plain
+    JSON). Without `--folder`, debug builds keep the text index in memory only: the real one is
+    sealed with a Keychain key that only the certificate-signed app can read without a prompt.
 - Glass windows: borderless `ShelfPanel`s with `NSGlassEffectView`s inside
   `NSGlassEffectContainerView`s, no window shadow, `ignoresMouseEvents = false` and a 1% backing so
   clicks don't fall through on macOS 26.
@@ -49,6 +54,8 @@ first for what it does. This file covers how to work on it.
 - Builds are signed with the **"ShotShelf Code Signing"** certificate in the maintainer's login
   Keychain (self-signed, shows as not trusted, that's fine). A stable identity keeps Screen
   Recording and Desktop permissions across updates; ad-hoc signing loses them on every update.
+  Both are signed with the hardened runtime (`--options runtime`), so no other program can load code
+  into ShotShelf to use those permissions; `release.sh` refuses to publish a build without it.
 - `./release.sh` (needs a clean tree) builds universal, signs the zip with the **"ShotShelf update
   signing key"** (Ed25519, in the Keychain; the public half is in `Updater.swift`), uploads zip + `.sig`
   and creates the GitHub release. Afterwards: prepend a "New in x.y.z" paragraph to the notes with

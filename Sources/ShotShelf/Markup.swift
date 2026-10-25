@@ -1,5 +1,4 @@
 import AppKit
-import CoreImage
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -81,14 +80,12 @@ struct Mark: Identifiable {
     }
 }
 
-/// The markup editor: arrows, boxes, highlights and text, plus redactions that pixelate whatever
+/// The markup editor: arrows, boxes, highlights and text, plus redactions that black out whatever
 /// they cover. Everything is drawn into a copy; the original shot is never changed.
 @MainActor
 final class MarkupModel: ObservableObject {
     let shot: Shot
     let image: CGImage
-    /// The whole shot pixelated once up front; redactions reveal it, and saving composites it in.
-    let pixelated: CGImage
     @Published var marks: [Mark] = []
     /// The mark being dragged out right now.
     @Published var drawing: Mark?
@@ -131,16 +128,8 @@ final class MarkupModel: ObservableObject {
     init?(shot: Shot) {
         guard let source = CGImageSourceCreateWithURL(shot.url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        let input = CIImage(cgImage: image)
-        // Blocks about 1/50 of the long edge: coarse enough that text can't be read back.
-        let scale = Double(max(image.width, image.height)) / 50
-        let blocks = input.clampedToExtent()
-            .applyingFilter("CIPixellate", parameters: [kCIInputScaleKey: scale, kCIInputCenterKey: CIVector(x: 0, y: 0)])
-            .cropped(to: input.extent)
-        guard let pixelated = CIContext().createCGImage(blocks, from: input.extent) else { return nil }
         self.shot = shot
         self.image = image
-        self.pixelated = pixelated
         tool = MarkTool(rawValue: UserDefaults.standard.string(forKey: Prefs.markupTool) ?? "") ?? .arrow
     }
 
@@ -218,14 +207,14 @@ final class MarkupModel: ObservableObject {
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         let full = CGRect(x: 0, y: 0, width: w, height: h)
         ctx.draw(image, in: full)
+        // Redactions are solid black, never pixelated or blurred: tools like Depix and Unredacter can
+        // read pixelated text back, especially terminal and code fonts. Each box is rounded out to
+        // whole pixels so no half-covered edge pixel keeps a trace of what's under it.
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
         for mark in marks where mark.tool == .redact {
             // Core Graphics counts y from the bottom.
             let box = mark.rect
-            let r = CGRect(x: box.minX * W, y: (1 - box.maxY) * H, width: box.width * W, height: box.height * H)
-            ctx.saveGState()
-            ctx.clip(to: r)
-            ctx.draw(pixelated, in: full)
-            ctx.restoreGState()
+            ctx.fill(CGRect(x: box.minX * W, y: (1 - box.maxY) * H, width: box.width * W, height: box.height * H).integral)
         }
 
         // Everything else is drawn top-down, like the editor lays it out.
@@ -341,7 +330,7 @@ struct MarkupView: View {
         let scale = size.width / CGFloat(model.image.width)
         return ZStack(alignment: .topLeading) {
             Image(decorative: model.image, scale: 1).resizable()
-            Image(decorative: model.pixelated, scale: 1).resizable()
+            Color.black
                 .mask(alignment: .topLeading) {
                     ZStack(alignment: .topLeading) {
                         ForEach(model.allMarks.filter { $0.tool == .redact }) { mark in
@@ -428,7 +417,7 @@ struct MarkupView: View {
                     .buttonStyle(.plain)
                 }
             }
-            // Redactions are always pixelated, so colour doesn't apply.
+            // Redactions are always solid black, so colour doesn't apply.
             .opacity(model.tool == .redact ? 0.35 : 1)
             .disabled(model.tool == .redact)
             GlassEffectContainer(spacing: 6) {
@@ -437,7 +426,7 @@ struct MarkupView: View {
                         Image(systemName: "wand.and.sparkles").font(.system(size: 12, weight: .medium)).frame(width: 16, height: 16)
                     }
                     .buttonStyle(.glass).buttonBorderShape(.circle).disabled(model.findingPrivate)
-                    .help("Redact Private Info: pixelates email addresses, phone and card numbers, keys, tokens and passwords")
+                    .help("Redact Private Info: blacks out email addresses, phone and card numbers, keys, tokens and passwords")
                     Menu {
                         Button { model.backdrop = nil } label: { checked("No Background", model.backdrop == nil) }
                         Divider()
@@ -494,7 +483,7 @@ struct MarkupView: View {
 }
 
 /// One mark as the editor shows it, drawn the same way `MarkupModel.render` draws it into the
-/// saved image. Redactions just get a dashed outline here; the pixelation is masked in below.
+/// saved image. Redactions just get a dashed outline here; their black fill is masked in below.
 private struct MarkView: View {
     let mark: Mark
     let size: CGSize

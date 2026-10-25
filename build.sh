@@ -57,13 +57,16 @@ PLIST
 # then sees every build as the same app, so permissions (Screen Recording, Desktop access) survive
 # updates. An ad-hoc signature, the fallback when building from source elsewhere, is a fingerprint of
 # one exact build, so macOS treats each update as a new app and asks again.
+# --options runtime turns on the hardened runtime: without it, another program could load its own
+# code into ShotShelf (DYLD_INSERT_LIBRARIES) and quietly use its Screen Recording and Desktop access.
 IDENTITY="ShotShelf Code Signing"
 if security find-certificate -c "$IDENTITY" >/dev/null 2>&1; then
     # The Keychain occasionally refuses the first request, so try twice.
-    codesign --force --sign "$IDENTITY" "$APP" || codesign --force --sign "$IDENTITY" "$APP"
+    codesign --force --options runtime --sign "$IDENTITY" "$APP" \
+        || codesign --force --options runtime --sign "$IDENTITY" "$APP"
 else
     echo "No \"$IDENTITY\" certificate in the Keychain; signing ad hoc (permissions won't survive updates)." >&2
-    codesign --force --sign - "$APP"
+    codesign --force --options runtime --sign - "$APP"
 fi
 echo "Built $APP ($VERSION, $(lipo -archs "$APP/Contents/MacOS/ShotShelf"))"
 
